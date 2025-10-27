@@ -121,13 +121,13 @@ Risk Checks → Profit Taking → Statistics Reporting
 ### System Flow Diagram
 
 ```text
-╔══════════════════════════════════════════════════════════════════════╗
-║                        OFFLINE ENVIRONMENT                           ║
-╠══════════════════════════════════════════════════════════════════════╣
-║                                                                      ║
-║  STAGE I: POLICY - Strategy Development                             ║
-║  ────────────────────────────────────────                            ║
-║                                                                      ║
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                        OFFLINE ENVIRONMENT                                   ║
+╠══════════════════════════════════════════════════════════════════════        ╣
+║                                                                              ║
+║  STAGE I: POLICY - Strategy Development                                      ║
+║  ────────────────────────────────────────                                    ║
+║                                                                              ║
 ║    ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
 ║    │  Macro Analysis │  ───> │    Strategy     │  ───> │  Bot Evolution  │
 ║    │   Agent (Ama)   │       │ Adaptation (Asa)│       │   Agent (Abe)   │
@@ -136,22 +136,22 @@ Risk Checks → Profit Taking → Statistics Reporting
 ║           ▼                           ▼                         ▼
 ║    Market Patterns            Pair-Specific             Trading Bot Code
 ║    & General Strategies       Customization             (Python)
-║                                                                      ║
-║  ─────────────────────────────────────────────────────────────────  ║
-║                                                                      ║
-║  STAGE II: OPTIMIZATION - Parameter Refinement                      ║
-║  ──────────────────────────────────────────────                     ║
-║                                                                      ║
-║    ┌─────────────────┐                    ┌─────────────────┐      ║
-║    │   Simulation    │  ───────────────>  │    Feedback     │      ║
-║    │   Environment   │                    │ Reflection (Afr)│      ║
-║    └─────────────────┘                    └─────────────────┘      ║
+║                                                                              ║
+║  ─────────────────────────────────────────────────────────────────           ║
+║                                                                              ║
+║  STAGE II: OPTIMIZATION - Parameter Refinement                               ║
+║  ──────────────────────────────────────────────                              ║
+║                                                                              ║
+║    ┌─────────────────┐                    ┌─────────────────┐                ║
+║    │   Simulation    │  ───────────────>  │    Feedback     │                ║
+║    │   Environment   │                    │ Reflection (Afr)│                ║
+║    └─────────────────┘                    └─────────────────┘                ║
 ║           │                                        │                ║
 ║           │                                        │                ║
 ║           ▼                                        ▼                ║
 ║    Performance Metrics                   Optimized Parameters       ║
 ║    & Risk Events                         & Constraints              ║
-║                                                                      ║
+║                                                                     ║
 ║           │                                        │                ║
 ║           └────────────────┬───────────────────────┘                ║
 ║                            │                                        ║
@@ -167,26 +167,26 @@ Risk Checks → Profit Taking → Statistics Reporting
 ║                         LIVE ENVIRONMENT                             ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║                                                                      ║
-║  STAGE III: DEPLOYMENT - Minute-Level Trading                       ║
-║  ─────────────────────────────────────────────                      ║
+║           STAGE III: DEPLOYMENT - Minute-Level Trading               ║
+║           ─────────────────────────────────────────────              ║
 ║                                                                      ║
-║    ╔════════════════════════════════════════════════════════╗       ║
-║    ║         Trading Bot Engine (Minute-Level)              ║       ║
-║    ╠════════════════════════════════════════════════════════╣       ║
-║    ║                                                        ║       ║
-║    ║  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ║
-║    ║  │  Market  │──>│  Order   │──>│ Position │──>│   Risk   │   ║
-║    ║  │ Monitor  │   │Placement │   │ Manager  │   │ Manager  │   ║
-║    ║  └──────────┘   └──────────┘   └──────────┘   └──────────┘   ║
-║    ║       │              │               │              │         ║
-║    ║       └──────────────┴───────────────┴──────────────┘         ║
-║    ║                          │                                    ║
-║    ║                          ▼                                    ║
-║    ║                   Profit Taking                               ║
-║    ║                                                        ║       ║
-║    ╚════════════════════════════════════════════════════════╝       ║
+║    ╔════════════════════════════════════════════════════════╗        ║
+║    ║         Trading Bot Engine (Minute-Level)              ║        ║
+║    ╠════════════════════════════════════════════════════════╣        ║
+║    ║                                                        ║        ║
+║    ║  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐      ║
+║    ║  │  Market  │──>│  Order   │──>│ Position │──>│   Risk   │      ║
+║    ║  │ Monitor  │   │Placement │   │ Manager  │   │ Manager  │      ║
+║    ║  └──────────┘   └──────────┘   └──────────┘   └──────────┘      ║
+║    ║       │              │               │              │  ║        ║
+║    ║       └──────────────┴───────────────┴──────────────┘  ║        ║
+║    ║                          │                             ║        ║
+║    ║                          ▼                             ║        ║
+║    ║                   Profit Taking                        ║        ║
+║    ║                                                        ║        ║
+║    ╚════════════════════════════════════════════════════════╝        ║
 ║                                                                      ║
-║    Output: Trade Execution, Position Tracking, Performance Stats    ║
+║    Output: Trade Execution, Position Tracking, Performance Stats     ║
 ║                                                                      ║
 ╚══════════════════════════════════════════════════════════════════════╝
 ```
