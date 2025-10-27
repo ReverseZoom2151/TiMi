@@ -7,7 +7,7 @@ mode: paper
 llm:
   # Semantic Analysis - for macro/micro strategy analysis
   semantic:
-    provider: openai  # openai, anthropic, deepseek
+    provider: openai  # openai, anthropic
     model: gpt-5-2025-08-07
     # Alternative: claude-sonnet-4-5-20250514 (anthropic)
     temperature: 0.7

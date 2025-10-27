@@ -77,7 +77,7 @@ TiMi (Trade in Minutes) implements the system described in the research paper "T
 
 ### Infrastructure
 
-- **Multi-Provider LLM**: OpenAI, Anthropic, DeepSeek support
+- **Multi-Provider LLM**: OpenAI, Anthropic support
 - **Exchange Integration**: Binance with testnet support
 - **Technical Indicators**: 20+ indicators including SMA, EMA, RSI, MACD
 - **Structured Logging**: JSON logs with trade/position tracking
@@ -199,7 +199,7 @@ Risk Checks → Profit Taking → Statistics Reporting
 
 - Python 3.9 or higher
 - pip package manager
-- API keys for LLM provider (OpenAI, Anthropic, or DeepSeek)
+- API keys for LLM provider (OpenAI or Anthropic)
 - Exchange API credentials (Binance or compatible)
 
 ### Step 1: Clone Repository
@@ -236,7 +236,7 @@ cp .env.example .env
 
 # Edit .env with your API keys
 # Required:
-# - OPENAI_API_KEY or ANTHROPIC_API_KEY or DEEPSEEK_API_KEY
+# - OPENAI_API_KEY or ANTHROPIC_API_KEY
 # - BINANCE_API_KEY
 # - BINANCE_API_SECRET
 ```
@@ -324,7 +324,7 @@ TiMi uses `config.yaml` for system configuration. Key sections:
 ```yaml
 llm:
   semantic:
-    provider: openai  # openai, anthropic, deepseek
+    provider: openai  # openai, anthropic
     model: gpt-5-2025-08-07
     temperature: 0.7
     max_tokens: 4000

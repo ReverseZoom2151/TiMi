@@ -227,23 +227,6 @@ class LLMClient:
                 max_tokens=config.max_tokens
             )
 
-        elif provider == "deepseek":
-            # DeepSeek uses OpenAI-compatible API
-            api_key = self.config.get_api_key("deepseek")
-            if not api_key:
-                raise ValueError(f"DeepSeek API key not found for {purpose}")
-
-            # Create OpenAI client with DeepSeek base URL
-            llm = OpenAILLM(
-                api_key=api_key,
-                model=config.model,
-                temperature=config.temperature,
-                max_tokens=config.max_tokens
-            )
-            # Override base URL for DeepSeek
-            llm.client.base_url = "https://api.deepseek.com/v1"
-            return llm
-
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
 
