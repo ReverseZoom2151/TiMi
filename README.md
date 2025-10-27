@@ -120,75 +120,40 @@ Risk Checks → Profit Taking → Statistics Reporting
 
 ### System Flow Diagram
 
-```text
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                        OFFLINE ENVIRONMENT                                   ║
-╠══════════════════════════════════════════════════════════════════════        ╣
-║                                                                              ║
-║  STAGE I: POLICY - Strategy Development                                      ║
-║  ────────────────────────────────────────                                    ║
-║                                                                              ║
-║    ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
-║    │  Macro Analysis │  ───> │    Strategy     │  ───> │  Bot Evolution  │
-║    │   Agent (Ama)   │       │ Adaptation (Asa)│       │   Agent (Abe)   │
-║    └─────────────────┘       └─────────────────┘       └─────────────────┘
-║           │                           │                         │
-║           ▼                           ▼                         ▼
-║    Market Patterns            Pair-Specific             Trading Bot Code
-║    & General Strategies       Customization             (Python)
-║                                                                              ║
-║  ─────────────────────────────────────────────────────────────────           ║
-║                                                                              ║
-║  STAGE II: OPTIMIZATION - Parameter Refinement                               ║
-║  ──────────────────────────────────────────────                              ║
-║                                                                              ║
-║    ┌─────────────────┐                    ┌─────────────────┐                ║
-║    │   Simulation    │  ───────────────>  │    Feedback     │                ║
-║    │   Environment   │                    │ Reflection (Afr)│                ║
-║    └─────────────────┘                    └─────────────────┘                ║
-║           │                                        │                ║
-║           │                                        │                ║
-║           ▼                                        ▼                ║
-║    Performance Metrics                   Optimized Parameters       ║
-║    & Risk Events                         & Constraints              ║
-║                                                                     ║
-║           │                                        │                ║
-║           └────────────────┬───────────────────────┘                ║
-║                            │                                        ║
-║                            ▼                                        ║
-║                   Hierarchical Refinement                           ║
-║                   (Parameter → Function → Strategy)                 ║
-║                                                                      ║
-╚══════════════════════════════════════════════════════════════════════╝
-                                   │
-                                   │ Deploy Optimized Bot
-                                   ▼
-╔══════════════════════════════════════════════════════════════════════╗
-║                         LIVE ENVIRONMENT                             ║
-╠══════════════════════════════════════════════════════════════════════╣
-║                                                                      ║
-║           STAGE III: DEPLOYMENT - Minute-Level Trading               ║
-║           ─────────────────────────────────────────────              ║
-║                                                                      ║
-║    ╔════════════════════════════════════════════════════════╗        ║
-║    ║         Trading Bot Engine (Minute-Level)              ║        ║
-║    ╠════════════════════════════════════════════════════════╣        ║
-║    ║                                                        ║        ║
-║    ║  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐      ║
-║    ║  │  Market  │──>│  Order   │──>│ Position │──>│   Risk   │      ║
-║    ║  │ Monitor  │   │Placement │   │ Manager  │   │ Manager  │      ║
-║    ║  └──────────┘   └──────────┘   └──────────┘   └──────────┘      ║
-║    ║       │              │               │              │  ║        ║
-║    ║       └──────────────┴───────────────┴──────────────┘  ║        ║
-║    ║                          │                             ║        ║
-║    ║                          ▼                             ║        ║
-║    ║                   Profit Taking                        ║        ║
-║    ║                                                        ║        ║
-║    ╚════════════════════════════════════════════════════════╝        ║
-║                                                                      ║
-║    Output: Trade Execution, Position Tracking, Performance Stats     ║
-║                                                                      ║
-╚══════════════════════════════════════════════════════════════════════╝
+```mermaid
+graph TB
+    subgraph OFFLINE["OFFLINE ENVIRONMENT"]
+        subgraph POLICY["STAGE I: POLICY - Strategy Development"]
+            A[Macro Analysis Agent<br/>Ama] -->|Market Patterns &<br/>General Strategies| B[Strategy Adaptation Agent<br/>Asa]
+            B -->|Pair-Specific<br/>Customization| C[Bot Evolution Agent<br/>Abe]
+            C -->|Trading Bot Code<br/>Python| D[Prototype Bot]
+        end
+
+        subgraph OPT["STAGE II: OPTIMIZATION - Parameter Refinement"]
+            D -->|Simulate| E[Simulation Environment]
+            E -->|Performance Metrics &<br/>Risk Events| F[Feedback Reflection Agent<br/>Afr]
+            F -->|Optimized Parameters<br/>& Constraints| G[Hierarchical Refinement]
+            G -->|Parameter → Function<br/>→ Strategy| H[Advanced Bot]
+        end
+    end
+
+    H -->|Deploy| LIVE
+
+    subgraph LIVE["LIVE ENVIRONMENT"]
+        subgraph DEPLOY["STAGE III: DEPLOYMENT - Minute-Level Trading"]
+            I[Market Monitor] -->|Real-time Data| J[Order Placement]
+            J -->|Limit Orders| K[Position Manager]
+            K -->|Risk Check| L[Risk Manager]
+            L -->|Approved| M[Profit Taking]
+            M -->|Trade Execution| N[Performance Stats]
+        end
+    end
+
+    style OFFLINE fill:#e1f5ff
+    style LIVE fill:#fff5e1
+    style POLICY fill:#d4edff
+    style OPT fill:#d4edff
+    style DEPLOY fill:#ffe4cc
 ```
 
 ---
