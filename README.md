@@ -325,19 +325,38 @@ TiMi uses `config.yaml` for system configuration. Key sections:
 llm:
   semantic:
     provider: openai  # openai, anthropic, deepseek
-    model: gpt-4-turbo-preview
+    model: gpt-5-2025-08-07
     temperature: 0.7
     max_tokens: 4000
 
   code:
     provider: openai
-    model: gpt-4
+    model: gpt-5-pro-2025-10-06
     temperature: 0.3
+    max_tokens: 8000
 
   reasoning:
     provider: openai
-    model: gpt-4
+    model: gpt-5-pro-2025-10-06
     temperature: 0.2
+    max_tokens: 4000
+```
+
+**Alternative Claude Configuration:**
+
+```yaml
+llm:
+  semantic:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250514  # Smartest for complex tasks
+
+  code:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250514  # Best for coding
+
+  reasoning:
+    provider: anthropic
+    model: claude-opus-4-1-20250514    # Specialized reasoning
 ```
 
 ### Trading Parameters

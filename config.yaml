@@ -8,21 +8,24 @@ llm:
   # Semantic Analysis - for macro/micro strategy analysis
   semantic:
     provider: openai  # openai, anthropic, deepseek
-    model: gpt-4-turbo-preview
+    model: gpt-5-2025-08-07
+    # Alternative: claude-sonnet-4-5-20250514 (anthropic)
     temperature: 0.7
     max_tokens: 4000
 
   # Code Programming - for bot evolution
   code:
     provider: openai
-    model: gpt-4
+    model: gpt-5-pro-2025-10-06
+    # Alternative: claude-sonnet-4-5-20250514 (anthropic) - best for coding
     temperature: 0.3
     max_tokens: 8000
 
   # Mathematical Reasoning - for parameter optimization
   reasoning:
     provider: openai
-    model: gpt-4
+    model: gpt-5-pro-2025-10-06
+    # Alternative: claude-opus-4-1-20250514 (anthropic) - specialized reasoning
     temperature: 0.2
     max_tokens: 4000
 
