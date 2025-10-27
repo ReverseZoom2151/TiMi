@@ -1,0 +1,244 @@
+# TiMi System Configuration
+
+# Mode: backtest, paper, live
+mode: paper
+
+# LLM Configuration
+llm:
+  # Semantic Analysis - for macro/micro strategy analysis
+  semantic:
+    provider: openai  # openai, anthropic, deepseek
+    model: gpt-4-turbo-preview
+    temperature: 0.7
+    max_tokens: 4000
+
+  # Code Programming - for bot evolution
+  code:
+    provider: openai
+    model: gpt-4
+    temperature: 0.3
+    max_tokens: 8000
+
+  # Mathematical Reasoning - for parameter optimization
+  reasoning:
+    provider: openai
+    model: gpt-4
+    temperature: 0.2
+    max_tokens: 4000
+
+# Exchange Configuration
+exchange:
+  primary: binance
+  testnet: true  # Use testnet for testing
+
+  binance:
+    rate_limit: 1200  # requests per minute
+    timeout: 30000    # milliseconds
+
+  cme:
+    enabled: false
+
+# Trading Pairs Configuration
+trading_pairs:
+  # Mainstream coins
+  mainstream:
+    - BTC/USDT
+    - ETH/USDT
+    - BNB/USDT
+
+  # Altcoins (higher volatility)
+  altcoins:
+    - SOL/USDT
+    - AVAX/USDT
+    - MATIC/USDT
+
+  # Active pairs (what to trade)
+  active: []  # Will be populated by strategy
+
+# Strategy Parameters (Algorithm 1 from paper)
+strategy:
+  # T1: Execution intervals (minutes)
+  execution_interval: 1
+
+  # T2: Look-back period for volatility calculation (minutes)
+  lookback_period: 60
+
+  # Volume requirement (minimum 24h volume in USD)
+  min_volume: 1000000
+
+  # Φreq: Minimum volatility requirement (%)
+  min_volatility: 0.5
+
+  # A: Capital allocation per pair (USD)
+  capital_per_pair: 100
+
+  # MP: Price distribution matrix (exponents for grid levels)
+  price_distribution: [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]
+
+  # MQ: Quantity distribution matrix (proportions)
+  quantity_distribution: [0.2, 0.2, 0.2, 0.15, 0.15, 0.05, 0.05]
+
+  # H: Profit/loss thresholds (multiples of volatility)
+  profit_loss_thresholds: [1.5, 2.0, 3.0, 5.0]
+
+  # Scaling coefficients
+  market_cap_coefficient: 1.0
+  funding_rate_coefficient: 1.0
+  entry_coefficient: 0.8
+
+# Risk Management
+risk:
+  # Maximum drawdown before emergency stop (%)
+  max_drawdown: 20
+
+  # Maximum position size as % of capital
+  max_position_pct: 10
+
+  # Maximum number of concurrent positions
+  max_concurrent_positions: 5
+
+  # Stop loss per position (%)
+  stop_loss_pct: 5
+
+  # Price deviation check (%)
+  max_price_deviation: 2
+
+  # Position size divisor (lambda from paper)
+  position_size_divisor: 10
+
+# Optimization Stage Configuration
+optimization:
+  enabled: true
+
+  # Simulation settings
+  simulation:
+    # Historical data period for backtesting
+    historical_days: 90
+
+    # Number of optimization cycles
+    max_cycles: 5
+
+    # Minimum performance improvement to continue
+    min_improvement: 0.05
+
+  # Feedback collection
+  feedback:
+    # Collect every N minutes during simulation
+    collection_interval: 60
+
+    # Metrics to track
+    metrics:
+      - annual_return
+      - sharpe_ratio
+      - max_drawdown
+      - win_rate
+      - profit_factor
+
+# Agent Configuration
+agents:
+  macro_analysis:
+    enabled: true
+    # Technical indicators to analyze
+    indicators:
+      - SMA
+      - EMA
+      - RSI
+      - MACD
+      - Bollinger_Bands
+      - ATR
+      - Volume
+
+    # Time windows for analysis (in days)
+    time_windows: [1, 7, 30, 90]
+
+  strategy_adaptation:
+    enabled: true
+    # Pair-specific factors to consider
+    factors:
+      - historical_volatility
+      - liquidity_depth
+      - correlation_with_btc
+      - funding_rate_history
+
+  bot_evolution:
+    enabled: true
+    # Programming laws enforcement
+    enforce_laws: true
+
+    # Code quality checks
+    quality_checks:
+      - syntax_validation
+      - security_scan
+      - performance_check
+
+  feedback_reflection:
+    enabled: true
+    # Optimization approach
+    method: linear_programming
+
+    # Hierarchical levels
+    optimization_levels:
+      - parameter
+      - function
+      - strategy
+
+# Monitoring and Logging
+monitoring:
+  enabled: true
+  port: 8000
+
+  # Metrics to expose
+  metrics:
+    - active_positions
+    - total_pnl
+    - win_rate
+    - order_latency
+    - api_errors
+
+  # Alert thresholds
+  alerts:
+    drawdown_threshold: 10  # Alert if drawdown exceeds %
+    error_rate_threshold: 5  # Alert if errors exceed N per minute
+
+logging:
+  level: INFO
+  format: json
+
+  # Log to file
+  file:
+    enabled: true
+    path: logs/timi.log
+    max_size_mb: 100
+    backup_count: 5
+
+  # Log to console
+  console:
+    enabled: true
+
+# Database
+database:
+  # Store trading history, feedback, etc.
+  type: sqlite
+  path: data/timi.db
+
+  # Tables to maintain
+  tables:
+    - trades
+    - positions
+    - feedback
+    - bot_versions
+    - optimization_history
+
+# Backtesting
+backtest:
+  # Data source
+  data_source: binance
+
+  # Initial capital
+  initial_capital: 10000
+
+  # Commission rate
+  commission: 0.001  # 0.1%
+
+  # Slippage model
+  slippage: 0.0005  # 0.05%
