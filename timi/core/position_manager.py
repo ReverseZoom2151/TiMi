@@ -4,7 +4,6 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ..exchange.base import Position
 from ..utils.logging import TradingLogger
 
 

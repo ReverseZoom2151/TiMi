@@ -628,7 +628,7 @@ TiMi/
 │   ├── unit/
 │   └── integration/
 ├── docs/                      # Documentation
-│   └── paper.pdf             # Original research paper
+│   └── timi_arxiv_2510.04787.pdf  # Original research paper
 ├── logs/                      # Log files (gitignored)
 ├── data/                      # Data storage (gitignored)
 ├── config.yaml                # Configuration

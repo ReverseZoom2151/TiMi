@@ -4,12 +4,12 @@ Implements the deployment stage with minute-level trading dynamics.
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
 from ..exchange.base import BaseExchange, Order, OrderType, OrderSide
-from ..data.market_data import MarketDataManager, MarketStats
+from ..data.market_data import MarketDataManager
 from ..utils.config import Config
 from ..utils.logging import TradingLogger
 
