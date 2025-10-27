@@ -149,19 +149,19 @@ graph TB
         end
     end
 
-    style OFFLINE fill:#b3d9ff,stroke:#0066cc,stroke-width:3px
-    style LIVE fill:#ffe6b3,stroke:#cc8800,stroke-width:3px
-    style POLICY fill:#cce6ff,stroke:#0066cc,stroke-width:2px
-    style OPT fill:#cce6ff,stroke:#0066cc,stroke-width:2px
-    style DEPLOY fill:#ffd699,stroke:#cc8800,stroke-width:2px
-    style A fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
-    style B fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
-    style C fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
-    style F fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
-    style I fill:#fff0e6,stroke:#cc8800,stroke-width:2px
-    style J fill:#fff0e6,stroke:#cc8800,stroke-width:2px
-    style K fill:#fff0e6,stroke:#cc8800,stroke-width:2px
-    style L fill:#fff0e6,stroke:#cc8800,stroke-width:2px
+    style OFFLINE fill:#d4e8ff,stroke:#0047ab,stroke-width:4px,color:#000
+    style LIVE fill:#ffe4b3,stroke:#d97706,stroke-width:4px,color:#000
+    style POLICY fill:#e3f2ff,stroke:#1e40af,stroke-width:3px,color:#000
+    style OPT fill:#e3f2ff,stroke:#1e40af,stroke-width:3px,color:#000
+    style DEPLOY fill:#ffedd5,stroke:#ea580c,stroke-width:3px,color:#000
+    style A fill:#bfdbfe,stroke:#1e40af,stroke-width:2px,color:#000
+    style B fill:#bfdbfe,stroke:#1e40af,stroke-width:2px,color:#000
+    style C fill:#bfdbfe,stroke:#1e40af,stroke-width:2px,color:#000
+    style F fill:#bfdbfe,stroke:#1e40af,stroke-width:2px,color:#000
+    style I fill:#fed7aa,stroke:#ea580c,stroke-width:2px,color:#000
+    style J fill:#fed7aa,stroke:#ea580c,stroke-width:2px,color:#000
+    style K fill:#fed7aa,stroke:#ea580c,stroke-width:2px,color:#000
+    style L fill:#fed7aa,stroke:#ea580c,stroke-width:2px,color:#000
 ```
 
 ---
