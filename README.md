@@ -149,11 +149,19 @@ graph TB
         end
     end
 
-    style OFFLINE fill:#e1f5ff
-    style LIVE fill:#fff5e1
-    style POLICY fill:#d4edff
-    style OPT fill:#d4edff
-    style DEPLOY fill:#ffe4cc
+    style OFFLINE fill:#b3d9ff,stroke:#0066cc,stroke-width:3px
+    style LIVE fill:#ffe6b3,stroke:#cc8800,stroke-width:3px
+    style POLICY fill:#cce6ff,stroke:#0066cc,stroke-width:2px
+    style OPT fill:#cce6ff,stroke:#0066cc,stroke-width:2px
+    style DEPLOY fill:#ffd699,stroke:#cc8800,stroke-width:2px
+    style A fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
+    style B fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
+    style C fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
+    style F fill:#e6f3ff,stroke:#0066cc,stroke-width:2px
+    style I fill:#fff0e6,stroke:#cc8800,stroke-width:2px
+    style J fill:#fff0e6,stroke:#cc8800,stroke-width:2px
+    style K fill:#fff0e6,stroke:#cc8800,stroke-width:2px
+    style L fill:#fff0e6,stroke:#cc8800,stroke-width:2px
 ```
 
 ---
