@@ -224,14 +224,14 @@ Expected output:
 
 ```text
 === Testing Configuration ===
-✓ Config loaded
+[OK] Config loaded
 === Testing LLM Client ===
-✓ LLM client initialized
+[OK] LLM client initialized
 === Testing Exchange Connector ===
-✓ Exchange connector created
+[OK] Exchange connector created
 === Testing Agents ===
-✓ Agent classes loaded
-✓ All systems operational!
+[OK] Agent classes loaded
+[OK] All systems operational!
 ```
 
 ---

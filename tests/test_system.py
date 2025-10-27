@@ -18,14 +18,14 @@ async def test_configuration():
     print("\n=== Testing Configuration ===")
     try:
         config = Config()
-        print(f"✓ Config loaded")
+        print("[OK] Config loaded")
         print(f"  - Mode: {config.mode}")
         print(f"  - Exchange: {config.exchange.primary}")
         print(f"  - Testnet: {config.exchange.testnet}")
         print(f"  - Mainstream pairs: {len(config.trading_pairs_mainstream)}")
         return True
     except Exception as e:
-        print(f"✗ Config failed: {e}")
+        print(f"[ERROR] Config failed: {e}")
         return False
 
 
@@ -38,17 +38,17 @@ async def test_llm_client():
         # Check if API keys are present
         openai_key = config.get_api_key('openai')
         if not openai_key:
-            print("⚠ OpenAI API key not found (add to .env)")
+            print("[WARNING] OpenAI API key not found (add to .env)")
             return False
 
         llm_client = LLMClient(config)
-        print("✓ LLM client initialized")
+        print("[OK] LLM client initialized")
         print("  - Semantic analysis: Ready")
         print("  - Code programming: Ready")
         print("  - Mathematical reasoning: Ready")
         return True
     except Exception as e:
-        print(f"✗ LLM client failed: {e}")
+        print(f"[ERROR] LLM client failed: {e}")
         return False
 
 
@@ -63,11 +63,11 @@ async def test_exchange_connector():
         api_secret = config.get_api_secret('binance')
 
         if not api_key or not api_secret:
-            print("⚠ Binance API credentials not found (add to .env)")
+            print("[WARNING] Binance API credentials not found (add to .env)")
             return False
 
         exchange = ExchangeFactory.create_default_exchange(config)
-        print(f"✓ Exchange connector created (Testnet: {exchange.testnet})")
+        print(f"[OK] Exchange connector created (Testnet: {exchange.testnet})")
 
         # Try to get ticker
         ticker = await exchange.get_ticker('BTC/USDT')
@@ -77,7 +77,7 @@ async def test_exchange_connector():
         await exchange.close()
         return True
     except Exception as e:
-        print(f"✗ Exchange connector failed: {e}")
+        print(f"[ERROR] Exchange connector failed: {e}")
         return False
 
 
@@ -101,14 +101,14 @@ async def test_agents():
 
         # We'll skip creating actual agent instances for now
         # as they require exchange connections
-        print("✓ Agent classes loaded")
+        print("[OK] Agent classes loaded")
         print("  - Macro Analysis Agent (Ama)")
         print("  - Strategy Adaptation Agent (Asa)")
         print("  - Bot Evolution Agent (Abe)")
         print("  - Feedback Reflection Agent (Afr)")
         return True
     except Exception as e:
-        print(f"✗ Agents failed: {e}")
+        print(f"[ERROR] Agents failed: {e}")
         return False
 
 
@@ -144,13 +144,13 @@ async def main():
     print(f"Passed: {passed}/{total}")
 
     if passed == total:
-        print("\n✓ All systems operational!")
+        print("\n[OK] All systems operational!")
         print("\nNext steps:")
         print("1. Ensure API keys are in .env file")
         print("2. Review config.yaml settings")
         print("3. Start with paper trading mode")
     else:
-        print("\n⚠ Some components need configuration")
+        print("\n[WARNING] Some components need configuration")
         print("\nSetup required:")
         print("1. Copy .env.example to .env")
         print("2. Add your API keys to .env")
