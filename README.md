@@ -176,7 +176,7 @@ Risk Checks → Profit Taking → Statistics Reporting
 ### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/TiMi.git
+git clone https://github.com/ReverseZoom2151/TiMi.git
 cd TiMi
 ```
 
