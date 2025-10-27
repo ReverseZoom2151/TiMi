@@ -15,9 +15,8 @@ TiMi is a production-ready algorithmic trading system that leverages Large Langu
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Usage](#usage)
-- [Documentation](#documentation)
 - [System Components](#system-components)
-- [Risk Management](#risk-management)
+- [Risk Management Implementation](#risk-management-implementation)
 - [Development](#development)
 - [Testing](#testing)
 - [Performance](#performance)
@@ -215,7 +214,7 @@ cp .env.example .env
 ### Step 5: Verify Installation
 
 ```bash
-python test_system.py
+python tests/test_system.py
 ```
 
 Expected output:
@@ -432,35 +431,6 @@ asyncio.run(analyze_market())
 
 ---
 
-## Documentation
-
-### Complete Guides
-
-- **[QUICKSTART.md](QUICKSTART.md)** - Get started in 5 minutes
-- **[IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)** - Detailed technical documentation
-- **[BUILD_COMPLETE.md](BUILD_COMPLETE.md)** - Complete build report
-- **[STATUS.md](STATUS.md)** - Component implementation status
-
-### API Reference
-
-See inline documentation in each module:
-
-```python
-# View agent documentation
-from timi.agents import MacroAnalysisAgent
-help(MacroAnalysisAgent)
-
-# View trading bot documentation
-from timi.core import TradingBot
-help(TradingBot)
-```
-
-### Configuration Reference
-
-See `config.yaml` for detailed parameter descriptions and defaults.
-
----
-
 ## System Components
 
 ### Multi-Agent System Details
@@ -654,14 +624,16 @@ TiMi/
 │   │   └── logging.py
 │   └── main.py                # Main entry point
 ├── tests/                     # Test suite
+│   ├── test_system.py        # System verification test
 │   ├── unit/
 │   └── integration/
-├── logs/                      # Log files
-├── data/                      # Data storage
+├── docs/                      # Documentation
+│   └── paper.pdf             # Original research paper
+├── logs/                      # Log files (gitignored)
+├── data/                      # Data storage (gitignored)
 ├── config.yaml                # Configuration
 ├── .env.example               # Environment template
 ├── requirements.txt           # Dependencies
-├── test_system.py            # System test
 ├── run_timi.py               # Run script
 └── README.md                 # This file
 ```
@@ -695,7 +667,7 @@ TiMi/
 ### Run System Test
 
 ```bash
-python test_system.py
+python tests/test_system.py
 ```
 
 Tests:
