@@ -7,6 +7,10 @@ from enum import Enum
 from typing import List, Dict, Any, Optional
 
 
+#: Placeholder substituted for any credential that would otherwise be printed.
+REDACTED = "***REDACTED***"
+
+
 class OrderType(Enum):
     """Order types."""
     MARKET = "market"
@@ -172,6 +176,36 @@ class BaseExchange(ABC):
         self.testnet = testnet
         self.kwargs = kwargs
 
+    def __repr__(self) -> str:
+        """Return a representation that never discloses credentials.
+
+        `__str__` falls back to this, so neither an f-string, a traceback nor a
+        log record built from this object can leak a key or a secret.
+        """
+        return (
+            f"{type(self).__name__}(testnet={self.testnet}, "
+            f"api_key={REDACTED}, api_secret={REDACTED})"
+        )
+
+    def redact(self, text: str) -> str:
+        """Replace any occurrence of the credentials in `text`.
+
+        Exchange libraries occasionally echo the submitted key back inside an
+        error message. Every message this package logs or raises is passed
+        through here first.
+
+        Args:
+            text: Text that may embed a credential
+
+        Returns:
+            The same text with key and secret substituted
+        """
+        cleaned = text
+        for secret in (self.api_secret, self.api_key):
+            if secret and len(secret) >= 4:
+                cleaned = cleaned.replace(secret, REDACTED)
+        return cleaned
+
     @abstractmethod
     async def get_ticker(self, pair: str) -> Ticker:
         """Get current ticker for a trading pair.
@@ -282,6 +316,11 @@ class BaseExchange(ABC):
     async def get_positions(self, pair: Optional[str] = None) -> List[Position]:
         """Get current positions.
 
+        On a spot venue there are no positions in the derivatives sense: the
+        implementation reports held base-asset inventory instead, so
+        `entry_price` and `current_price` may be unavailable. See the
+        connector's own docstring before relying on either.
+
         Args:
             pair: Trading pair (None for all pairs)
 
@@ -326,7 +365,44 @@ class InsufficientBalanceError(ExchangeError):
 
 
 class OrderError(ExchangeError):
-    """Order creation/management error."""
+    """Order creation/management error.
+
+    Raised only when the order is known NOT to have reached the exchange, or
+    was refused by it. Callers may treat this as "no order exists".
+    """
+    pass
+
+
+class OrderStatusUnknown(ExchangeError):
+    """The outcome of an order request could not be determined.
+
+    Raised when a request times out or the connection drops after the order
+    was sent. The order may or may not have been accepted, so this must never
+    be treated as a rejection. Reconcile with `get_open_orders` (or a fetch by
+    client order id) before retrying, otherwise the position may be doubled.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        pair: Optional[str] = None,
+        client_order_id: Optional[str] = None
+    ):
+        """Initialise the unknown-status error.
+
+        Args:
+            message: Description of what went wrong
+            pair: Trading pair the request was for
+            client_order_id: Deterministic id sent with the request, used to
+                reconcile the order against the exchange
+        """
+        super().__init__(message)
+        self.pair = pair
+        self.client_order_id = client_order_id
+
+
+class MinimumNotionalError(OrderError):
+    """Order value or quantity is below what the market accepts."""
     pass
 
 

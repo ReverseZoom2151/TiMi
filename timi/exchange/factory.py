@@ -50,12 +50,24 @@ class ExchangeFactory:
                 testnet=testnet
             )
 
-            return BinanceExchange(
+            exchange = BinanceExchange(
                 api_key=api_key,
                 api_secret=api_secret,
                 testnet=testnet,
                 **{k: v for k, v in kwargs.items() if k not in ['api_key', 'api_secret', 'testnet']}
             )
+
+            # The resolved endpoint, not the requested flag. These can only
+            # disagree if the routing broke, which is exactly the failure that
+            # sends test orders to the live venue.
+            logger.info(
+                "Binance connector ready",
+                testnet=testnet,
+                endpoint=exchange.api_endpoint,
+                market_type='spot'
+            )
+
+            return exchange
 
         elif exchange_name == 'cme':
             # TODO: Implement CME connector
