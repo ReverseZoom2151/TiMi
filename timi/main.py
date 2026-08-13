@@ -11,7 +11,14 @@ import argparse
 import sys
 from typing import List, Optional
 
-from .utils.config import Config
+from .utils.config import (
+    Config,
+    LiveTradingNotUnlockedError,
+    Mode,
+    UnsafeModeError,
+    assert_live_trading_unlocked,
+    assert_mode_matches_endpoint,
+)
 from .utils.logging import setup_logging, get_logger
 from .llm.client import LLMClient
 from .exchange.factory import ExchangeFactory
@@ -313,6 +320,15 @@ async def main():
         default="config.yaml",
         help="Path to config file"
     )
+    parser.add_argument(
+        "--i-understand-the-risk",
+        action="store_true",
+        dest="i_understand_the_risk",
+        help=(
+            "Required for live trading, alongside the environment variable "
+            "TIMI_ALLOW_LIVE=1. Live trading uses real money."
+        )
+    )
 
     args = parser.parse_args()
 
@@ -323,13 +339,22 @@ async def main():
     logger.info("Rationality-Driven Agentic System for Quantitative Trading")
     logger.info("=" * 60)
 
-    # Load configuration
+    # Load configuration. The CLI mode beats both the file and the
+    # environment, and an unrecognised mode stops the run here.
     config = Config()
-    config.load(args.config)
+    config.load(args.config, cli_overrides={"mode": args.mode})
 
-    # Override mode if specified
-    if args.mode:
-        config._config_data['mode'] = args.mode
+    mode = config.mode
+
+    # Both unlocks must be present before anything is constructed, so a live
+    # run cannot get as far as holding an authenticated client by mistake.
+    if mode == Mode.LIVE.value:
+        try:
+            assert_live_trading_unlocked(args.i_understand_the_risk)
+        except LiveTradingNotUnlockedError as e:
+            logger.error("Live trading refused", reason=str(e))
+            print(str(e))
+            sys.exit(2)
 
     # Initialize system
     system = TiMiSystem(config)
@@ -337,22 +362,37 @@ async def main():
     try:
         await system.initialize()
 
-        if args.mode == "paper":
+        # The mode and the endpoint the client actually resolved to must
+        # agree. Nothing below this line may place an order until they do.
+        endpoint = assert_mode_matches_endpoint(system.exchange, mode)
+        logger.info("Endpoint verified against mode", mode=mode, endpoint=endpoint)
+
+        if mode == Mode.PAPER.value:
             logger.info("Running in PAPER TRADING mode (safe)")
             await system.run_paper_trading(args.pairs, args.duration)
 
-        elif args.mode == "live":
+        elif mode == Mode.LIVE.value:
             logger.warning("Running in LIVE TRADING mode - REAL MONEY AT RISK!")
-            response = input("Are you sure you want to proceed with live trading? (yes/no): ")
-            if response.lower() == "yes":
+            # The prompt is the last barrier, not the only one, and it states
+            # the facts so the operator confirms against them.
+            print("About to trade with REAL MONEY.")
+            print(f"  mode:     {mode}")
+            print(f"  endpoint: {endpoint}")
+            print(f"  pairs:    {', '.join(args.pairs)}")
+            response = input("Type yes to proceed with live trading (yes/no): ")
+            if response.strip().lower() == "yes":
                 await system.run_paper_trading(args.pairs, args.duration)  # Same logic for now
             else:
                 logger.info("Live trading cancelled")
 
-        elif args.mode == "backtest":
+        elif mode == Mode.BACKTEST.value:
             logger.info("Backtesting mode not yet implemented")
             sys.exit(1)
 
+    except UnsafeModeError as e:
+        logger.error("Startup safety check failed", error=str(e))
+        print(str(e))
+        sys.exit(2)
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
     except Exception as e:
