@@ -15,13 +15,39 @@ Sign convention, stated once because the old code did not have one:
 * A reduction is expressed either as a negative `size` passed to
   `add_position`, or as a positive `size` passed to `close_position`. Both mean
   the same thing: inventory left the book.
-* Reducing a holding NEVER moves the average entry price. Selling half a
-  holding at a profit does not make the remaining half cheaper. Only a purchase
-  changes the average cost.
 
-A holding whose cost basis is unknown is marked as such rather than being given
-a placeholder price of 0.0 and treated as free inventory. `entry_price_known`
-is the flag; callers must check it before computing a target or a stop.
+Tranche accounting
+------------------
+
+A holding is a queue of TRANCHES rather than a single blended number. A tranche
+is a quantity of base currency that either carries the price paid for it, taken
+from a fill this system recorded, or is explicitly UNPRICED because it arrived
+by a route that carries no cost information (found on the account at start-up,
+deposited by hand, or bought before the bot ran).
+
+* The average entry price is the quantity-weighted average of the PRICED
+  tranches only. Unpriced quantity is never folded in at 0.0, which would drag
+  the average towards free inventory.
+* `priced_size` and `unpriced_size` report how much of the holding each kind
+  accounts for, so a holding can be partly basis-known.
+* Tranches are consumed FIRST IN, FIRST OUT. FIFO is the usual convention for
+  spot inventory, it needs no extra state beyond acquisition order, and it is
+  the easiest to reason about when auditing a sale against the fills that
+  preceded it. Realised P&L is computed against the tranche or tranches the
+  sale actually consumed, not against the blended average.
+* A reduction never RE-PRICES the tranches that remain: a sale price is never
+  blended into the cost of inventory that is still held. Selling half a holding
+  at a profit does not make the remaining half cheaper. The reported average
+  can still move after a sale, but only because whole tranches left the book.
+
+A holding is only reported as having a usable cost basis when EVERY tranche in
+it is priced. `entry_price_known` is that flag, and callers must check it before
+computing a target or a stop. Mixed holdings are deliberately reported as
+basis-unknown: the callers that act on this book close a whole holding at a
+time, so letting them act on a mixed holding would apply a priced decision to
+unpriced quantity. What tranche accounting buys is that the priced part stays
+priced. Once the unpriced quantity leaves, the holding recovers its real
+average immediately instead of needing a full flat-and-rebuy cycle.
 """
 
 import math
@@ -38,8 +64,43 @@ DUST_SIZE = 1e-12
 
 
 @dataclass
+class Tranche:
+    """A quantity of base currency acquired in one go.
+
+    A tranche is either priced, meaning `price` is the price actually paid on a
+    fill this system recorded, or unpriced, meaning the quantity was adopted
+    from the exchange and nothing is known about what it cost. Unpriced is
+    represented by `price is None`, never by 0.0, so that no arithmetic can
+    mistake it for free inventory.
+    """
+    quantity: float
+    price: Optional[float] = None
+    acquired_at: datetime = field(default_factory=datetime.now)
+
+    @property
+    def is_priced(self) -> bool:
+        """Whether this tranche carries a usable acquisition price.
+
+        Returns:
+            True when `price` may be used for a basis or a P&L figure
+        """
+        return self.price is not None and self.price > 0
+
+    @property
+    def cost(self) -> float:
+        """Cost of the tranche, or 0.0 when it is unpriced."""
+        return self.quantity * self.price if self.is_priced else 0.0
+
+
+@dataclass
 class ManagedPosition:
-    """A held spot inventory line with its accumulated cost basis."""
+    """A held spot inventory line with its accumulated cost basis.
+
+    `size` and `entry_price` are kept in step with `tranches` by `_sync`, so
+    callers written against the flat fields keep working unchanged. A position
+    built directly with no tranches, as some tests and adapters do, falls back
+    to reading those flat fields.
+    """
     pair: str
     size: float
     entry_price: float
@@ -49,6 +110,7 @@ class ManagedPosition:
     entry_time: datetime = field(default_factory=datetime.now)
     last_update: datetime = field(default_factory=datetime.now)
     metadata: Dict = field(default_factory=dict)
+    tranches: List[Tranche] = field(default_factory=list)
 
     @property
     def is_long(self) -> bool:
@@ -76,6 +138,10 @@ class ManagedPosition:
         entry price of 0.0 every target price is 0.0 and every current price
         clears it, which closes the holding instantly.
 
+        False as well for a holding that is only PARTLY priced. Callers close a
+        whole holding at a time, so a True here would apply a decision derived
+        from the priced tranches to the unpriced ones too.
+
         Returns:
             True when `entry_price` may be used for targets and P&L
         """
@@ -85,9 +151,42 @@ class ManagedPosition:
         return bool(known) and self.entry_price > 0
 
     @property
+    def priced_size(self) -> float:
+        """Quantity held whose acquisition price is known.
+
+        Returns:
+            The summed quantity of the priced tranches
+        """
+        if not self.tranches:
+            return self.size if self.entry_price_known else 0.0
+        return sum(t.quantity for t in self.tranches if t.is_priced)
+
+    @property
+    def unpriced_size(self) -> float:
+        """Quantity held that carries no acquisition price.
+
+        This is the quantity that must be excluded from any decision needing a
+        cost basis. It is never valued at 0.0 and called cheap.
+
+        Returns:
+            The summed quantity of the unpriced tranches
+        """
+        return max(self.size - self.priced_size, 0.0)
+
+    @property
+    def is_fully_priced(self) -> bool:
+        """Whether every unit held has a known acquisition price."""
+        return self.priced_size > DUST_SIZE and self.unpriced_size <= DUST_SIZE
+
+    @property
     def notional(self) -> float:
         """Cost value of the holding at its average entry price."""
         return abs(self.size) * self.entry_price
+
+    @property
+    def priced_notional(self) -> float:
+        """Cost value of the priced tranches only."""
+        return self.priced_size * self.entry_price
 
     @property
     def pnl_percentage(self) -> float:
@@ -111,7 +210,8 @@ class ManagedPosition:
         """Update the mark price and recalculate unrealised P&L.
 
         A holding with no known cost basis keeps an unrealised P&L of 0.0,
-        because the true figure is not knowable from a balance.
+        because the true figure is not knowable from a balance. That includes a
+        partly priced holding, whose total is not knowable either.
 
         Args:
             current_price: Current market price
@@ -125,6 +225,103 @@ class ManagedPosition:
 
         # Long only: inventory gains when the mark rises above the average cost.
         self.unrealized_pnl = (current_price - self.entry_price) * self.size
+
+    # ------------------------------------------------------------------
+    # Tranche bookkeeping
+    # ------------------------------------------------------------------
+
+    def add_tranche(
+        self,
+        quantity: float,
+        price: Optional[float] = None
+    ) -> Tranche:
+        """Append a tranche to the back of the queue.
+
+        A price of None, of zero or of anything negative is recorded as
+        unpriced rather than as a cost of 0.0.
+
+        Args:
+            quantity: Quantity acquired, positive
+            price: Price paid, or None when the quantity was adopted
+
+        Returns:
+            The tranche that was appended
+        """
+        usable_price = price if (price is not None and price > 0) else None
+        tranche = Tranche(quantity=quantity, price=usable_price)
+        self.tranches.append(tranche)
+        self._sync()
+        return tranche
+
+    def consume(self, quantity: float) -> List[Tranche]:
+        """Remove `quantity` from the holding, oldest tranche first.
+
+        The FIFO order is the documented convention for this book. A tranche
+        that is only partly consumed is split: the consumed part is returned
+        and the remainder stays at the front of the queue at its original
+        price, because a sale never re-prices what is still held.
+
+        Args:
+            quantity: Quantity to remove, positive. Clamped to the quantity
+                actually held, since spot cannot sell what it does not have
+
+        Returns:
+            The tranches consumed, in the order they were consumed
+        """
+        taken: List[Tranche] = []
+        remaining = min(quantity, self.size)
+
+        while remaining > DUST_SIZE and self.tranches:
+            head = self.tranches[0]
+            if head.quantity - remaining <= DUST_SIZE:
+                taken.append(head)
+                remaining -= head.quantity
+                self.tranches.pop(0)
+                continue
+
+            taken.append(
+                Tranche(
+                    quantity=remaining,
+                    price=head.price,
+                    acquired_at=head.acquired_at
+                )
+            )
+            head.quantity -= remaining
+            remaining = 0.0
+
+        self._sync()
+        return taken
+
+    def _sync(self) -> None:
+        """Recompute the flat fields from the tranche queue.
+
+        `size` becomes the total quantity held, `entry_price` the
+        quantity-weighted average of the PRICED tranches only, and
+        `entry_price_known` is True only when nothing unpriced is left.
+        """
+        self.tranches = [t for t in self.tranches if t.quantity > DUST_SIZE]
+
+        if not self.tranches:
+            self.size = 0.0
+            self.entry_price = 0.0
+            self.metadata['entry_price_known'] = False
+            self.last_update = datetime.now()
+            return
+
+        self.size = sum(t.quantity for t in self.tranches)
+        priced_quantity = sum(t.quantity for t in self.tranches if t.is_priced)
+
+        if priced_quantity > DUST_SIZE:
+            total_cost = sum(t.cost for t in self.tranches)
+            self.entry_price = total_cost / priced_quantity
+        else:
+            self.entry_price = 0.0
+
+        self.metadata['entry_price_known'] = (
+            priced_quantity > DUST_SIZE
+            and (self.size - priced_quantity) <= DUST_SIZE
+        )
+        self.last_update = datetime.now()
 
 
 class PositionManager:
@@ -153,10 +350,11 @@ class PositionManager:
     ) -> Optional[ManagedPosition]:
         """Record a fill against a holding.
 
-        A positive `size` is a purchase and moves the average entry price
-        towards the price paid. A negative `size` is a reduction and leaves the
-        average entry price exactly where it was: inventory that leaves the
-        book does not change what the remaining inventory cost.
+        A positive `size` is a purchase and appends a tranche at the price
+        paid, which moves the average entry price towards it. A negative `size`
+        is a reduction and consumes tranches FIFO without re-pricing anything
+        that remains: inventory that leaves the book does not change what the
+        remaining inventory cost.
 
         Args:
             pair: Trading pair
@@ -204,6 +402,10 @@ class PositionManager:
     ) -> ManagedPosition:
         """Create a new holding from a first fill.
 
+        A caller may state in the metadata that the price is not to be trusted
+        by passing `entry_price_known=False`, in which case the opening tranche
+        is recorded as unpriced.
+
         Args:
             pair: Trading pair
             size: Quantity bought, positive
@@ -214,16 +416,18 @@ class PositionManager:
             The newly created holding
         """
         meta = dict(metadata or {})
-        meta.setdefault('entry_price_known', entry_price > 0)
+        declared = meta.get('entry_price_known')
+        price = entry_price if declared is not False else None
 
         position = ManagedPosition(
             pair=pair,
-            size=size,
-            entry_price=entry_price,
-            current_price=entry_price,
+            size=0.0,
+            entry_price=0.0,
+            current_price=entry_price if entry_price > 0 else 0.0,
             unrealized_pnl=0.0,
             metadata=meta
         )
+        position.add_tranche(size, price)
         self.positions[pair] = position
 
         self._log_position(position)
@@ -235,41 +439,51 @@ class PositionManager:
         size: float,
         entry_price: float
     ) -> None:
-        """Add to a holding and re-average its cost basis.
+        """Add to a holding as a new tranche and re-average the priced part.
 
-        When either the existing basis or the incoming price is unknown, the
-        blended average is unknowable too, and the holding is marked as having
-        no basis rather than being given a number that looks authoritative.
+        A purchase with no usable price is recorded as an unpriced tranche. It
+        does not destroy the basis of the tranches already held, but it does
+        leave the holding only partly priced, which is reported as having no
+        usable basis until that quantity leaves.
 
         Args:
             position: Holding to add to
             size: Quantity bought, positive
             entry_price: Price paid
         """
-        if not position.entry_price_known or entry_price <= 0:
-            position.size += size
-            position.entry_price = 0.0
-            position.metadata['entry_price_known'] = False
+        position.add_tranche(size, entry_price)
+
+        if entry_price <= 0:
             self.logger.logger.warning(
                 "cost_basis_unknown_after_purchase",
                 pair=position.pair,
                 size=position.size,
+                unpriced=position.unpriced_size,
                 message=(
-                    "Bought into a holding with no known cost basis; the "
-                    "blended average cannot be derived"
+                    "Bought into a holding at no usable price; that quantity "
+                    "is recorded as unpriced"
                 )
             )
-            return
-
-        total_cost = position.entry_price * position.size + entry_price * size
-        position.size += size
-        position.entry_price = total_cost / position.size
-        position.metadata['entry_price_known'] = True
+        elif not position.entry_price_known:
+            self.logger.logger.info(
+                "holding_partly_unpriced",
+                pair=position.pair,
+                size=position.size,
+                priced=position.priced_size,
+                unpriced=position.unpriced_size,
+                message=(
+                    "Purchase recorded, but the holding still contains "
+                    "unpriced quantity; no basis is reported for it"
+                )
+            )
 
         self._log_position(position)
 
     def _reduce(self, position: ManagedPosition, quantity: float) -> None:
-        """Remove inventory from a holding, leaving the cost basis untouched.
+        """Remove inventory from a holding, consuming tranches FIFO.
+
+        The tranches that remain keep the prices they were acquired at, so the
+        sale price is never blended into the cost of what is still held.
 
         Args:
             position: Holding to reduce
@@ -285,8 +499,7 @@ class PositionManager:
             )
             quantity = position.size
 
-        position.size -= quantity
-        position.last_update = datetime.now()
+        position.consume(quantity)
 
     def _retire(self, pair: str) -> None:
         """Move a fully closed holding out of the open book.
@@ -299,6 +512,7 @@ class PositionManager:
         """
         closed = self.positions.pop(pair, None)
         if closed is not None:
+            closed.tranches = []
             closed.size = 0.0
             closed.unrealized_pnl = 0.0
             self.closed_positions.append(closed)
@@ -313,15 +527,17 @@ class PositionManager:
         """Align the tracked quantity with the inventory the exchange reports.
 
         The exchange is authoritative for QUANTITY and knows nothing about
-        cost. Surplus inventory therefore arrives with no basis, and since the
-        average cost of a mixture that includes an unpriced part is not
-        derivable, the whole holding is marked as having no basis. That is
-        deliberately loud: it stops profit-taking on that pair until a fresh
-        cycle of buy and full sell re-establishes a basis, which is the safe
-        direction to fail.
+        cost. Surplus inventory therefore arrives as an UNPRICED tranche. The
+        tranches already recorded from fills keep their prices, so only the
+        adopted quantity is basis-unknown; the holding as a whole is still
+        reported as having no usable basis while that quantity is present,
+        which stops profit-taking on the pair. That is the safe direction to
+        fail, and the priced part no longer has to be rebuilt from scratch once
+        the adopted quantity is gone.
 
         A shortfall means inventory left by some route this system did not see.
-        The quantity is reduced and the basis is kept, as with any other sale.
+        The quantity is reduced FIFO and the remaining tranches keep their
+        prices, as with any other sale.
 
         Args:
             pair: Trading pair
@@ -356,12 +572,13 @@ class PositionManager:
             meta['entry_price_known'] = False
             position = ManagedPosition(
                 pair=pair,
-                size=exchange_size,
+                size=0.0,
                 entry_price=0.0,
                 current_price=0.0,
                 unrealized_pnl=0.0,
                 metadata=meta
             )
+            position.add_tranche(exchange_size, None)
             self.positions[pair] = position
             self.logger.logger.info(
                 "holding_adopted_without_basis",
@@ -380,17 +597,18 @@ class PositionManager:
             return existing
 
         if difference > 0:
-            existing.size = exchange_size
-            existing.entry_price = 0.0
-            existing.metadata['entry_price_known'] = False
+            existing.add_tranche(difference, None)
             self.logger.logger.warning(
                 "surplus_inventory_without_basis",
                 pair=pair,
                 surplus=difference,
-                size=exchange_size,
+                size=existing.size,
+                priced=existing.priced_size,
+                unpriced=existing.unpriced_size,
                 message=(
-                    "More inventory held than this system bought; the average "
-                    "cost of the holding is no longer derivable"
+                    "More inventory held than this system bought; the surplus "
+                    "is adopted as an unpriced tranche and no basis is "
+                    "reported until it leaves"
                 )
             )
             return existing
@@ -402,8 +620,7 @@ class PositionManager:
             size=exchange_size,
             message="Less inventory held than tracked; reducing the holding"
         )
-        existing.size = exchange_size
-        existing.last_update = datetime.now()
+        existing.consume(abs(difference))
         return existing
 
     # ------------------------------------------------------------------
@@ -434,7 +651,14 @@ class PositionManager:
 
         The quantity is taken as a magnitude, so a caller that passes a
         negative size gets the same result as one that passes a positive one.
-        A partial close leaves the average entry price where it was.
+        A close larger than the holding is clamped: spot cannot sell what it
+        does not hold.
+
+        Tranches are consumed FIFO and the realised P&L is computed against the
+        tranches actually consumed, not against the blended average. A sale
+        that runs past the priced tranches into unpriced quantity realises
+        nothing for that part: no cost was ever recorded for it, so no honest
+        gain or loss can be attributed to it, and it is reported instead.
 
         Args:
             pair: Trading pair
@@ -454,17 +678,27 @@ class PositionManager:
         if close_size <= DUST_SIZE:
             return position
 
-        if position.entry_price_known:
-            realized_pnl = (exit_price - position.entry_price) * close_size
-        else:
-            # No basis means no honest P&L figure. Recording zero is not a
-            # claim that the trade broke even, it is a refusal to invent one.
-            realized_pnl = 0.0
+        consumed = position.consume(close_size)
+
+        realized_pnl = 0.0
+        unpriced_quantity = 0.0
+        for tranche in consumed:
+            if tranche.is_priced:
+                realized_pnl += (exit_price - tranche.price) * tranche.quantity
+            else:
+                unpriced_quantity += tranche.quantity
+
+        if unpriced_quantity > DUST_SIZE:
+            # No basis means no honest P&L figure. Recording zero for that part
+            # is not a claim that it broke even, it is a refusal to invent one.
             self.logger.logger.warning(
                 "realised_pnl_unknown",
                 pair=pair,
-                quantity=close_size,
-                message="Closed a holding with no cost basis; P&L not derivable"
+                quantity=unpriced_quantity,
+                message=(
+                    "Sold quantity with no cost basis; P&L not derivable for "
+                    "that part of the sale"
+                )
             )
 
         position.realized_pnl += realized_pnl
@@ -478,15 +712,14 @@ class PositionManager:
             pnl=realized_pnl
         )
 
-        full_close = close_size >= position.size - DUST_SIZE
-        if full_close:
+        if position.size <= DUST_SIZE:
             closed = self.positions.pop(pair)
+            closed.tranches = []
             closed.size = 0.0
             closed.unrealized_pnl = 0.0
             self.closed_positions.append(closed)
             return closed
 
-        position.size -= close_size
         position.last_update = datetime.now()
         position.update_price(exit_price)
         return position
@@ -564,7 +797,8 @@ class PositionManager:
 
         `TradingLogger.log_position` divides by `entry_price * size` whenever
         the size is positive, so calling it for a holding with no cost basis
-        raises ZeroDivisionError. Such holdings are logged plainly instead.
+        raises ZeroDivisionError. Such holdings are logged plainly instead,
+        with the split between priced and unpriced quantity.
 
         Args:
             position: Holding to log
@@ -583,5 +817,7 @@ class PositionManager:
             "position_update_without_basis",
             pair=position.pair,
             size=position.size,
+            priced_size=position.priced_size,
+            unpriced_size=position.unpriced_size,
             current_price=position.current_price
         )
