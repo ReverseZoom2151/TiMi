@@ -40,25 +40,69 @@ _CREDENTIAL_VARS = (
 
 
 class NetworkAccessAttempted(RuntimeError):
-    """Raised when a test tries to open a socket."""
+    """Raised when a test tries to open a socket to a remote host."""
+
+
+# Captured before any patching, so the guard can still let loopback through.
+_REAL_CONNECT = socket.socket.connect
+_REAL_CONNECT_EX = socket.socket.connect_ex
+_REAL_CREATE_CONNECTION = socket.create_connection
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "::1", "", None})
+
+
+def _is_loopback(address: Any) -> bool:
+    """True for connections that never leave the machine.
+
+    Loopback has to stay open. On Windows, asyncio's ProactorEventLoop builds
+    its self-pipe from a real socket pair on 127.0.0.1, so blocking loopback
+    blocks every async test in the suite rather than blocking the exchange.
+    Nothing reachable on loopback is an exchange account, so allowing it costs
+    no safety.
+    """
+
+    host = address[0] if isinstance(address, (tuple, list)) and address else address
+
+    if host in _LOOPBACK_HOSTS:
+        return True
+    if not isinstance(host, str):
+        # AF_UNIX paths and similar are local by construction.
+        return True
+
+    return host.startswith("127.") or host == "::1"
 
 
 @pytest.fixture(autouse=True)
 def _no_network(request, monkeypatch):
-    """Block all outbound sockets unless the test is marked `network`."""
+    """Block outbound sockets to remote hosts unless marked `network`."""
 
     if request.node.get_closest_marker("network"):
         return
 
-    def _blocked(*args: Any, **kwargs: Any):
+    def _refuse(address: Any) -> None:
         raise NetworkAccessAttempted(
-            f"{request.node.nodeid} attempted a network connection. "
+            f"{request.node.nodeid} attempted a network connection to {address!r}. "
             "Mock the exchange, or mark the test with @pytest.mark.network."
         )
 
-    monkeypatch.setattr(socket.socket, "connect", _blocked)
-    monkeypatch.setattr(socket.socket, "connect_ex", _blocked)
-    monkeypatch.setattr(socket, "create_connection", _blocked)
+    def _guarded_connect(self, address, *args: Any, **kwargs: Any):
+        if _is_loopback(address):
+            return _REAL_CONNECT(self, address, *args, **kwargs)
+        _refuse(address)
+
+    def _guarded_connect_ex(self, address, *args: Any, **kwargs: Any):
+        if _is_loopback(address):
+            return _REAL_CONNECT_EX(self, address, *args, **kwargs)
+        _refuse(address)
+
+    def _guarded_create_connection(address, *args: Any, **kwargs: Any):
+        if _is_loopback(address):
+            return _REAL_CREATE_CONNECTION(address, *args, **kwargs)
+        _refuse(address)
+
+    monkeypatch.setattr(socket.socket, "connect", _guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", _guarded_connect_ex)
+    monkeypatch.setattr(socket, "create_connection", _guarded_create_connection)
 
 
 @pytest.fixture(autouse=True)
