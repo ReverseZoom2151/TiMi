@@ -1,12 +1,20 @@
 """Logging configuration for TiMi system."""
 
 import logging
+import math
 import sys
 from pathlib import Path
 from typing import Optional
 from logging.handlers import RotatingFileHandler
 import structlog
 from .config import Config
+
+# Denominators smaller than this are treated as zero. Spot holdings pulled
+# straight from the exchange can have a cost basis of exactly 0.0 (no entry
+# price was ever recorded), and floating point noise can leave a denominator
+# that is technically nonzero but meaningless, so an exact `!= 0` comparison
+# is not good enough.
+_DUST = 1e-12
 
 
 def setup_logging(config: Optional[Config] = None) -> None:
@@ -95,8 +103,56 @@ def get_logger(name: str) -> structlog.BoundLogger:
     return structlog.get_logger(name)
 
 
+def _safe_pnl_pct(pnl: float, entry_price: float, size: float) -> Optional[float]:
+    """Compute a PnL percentage, or ``None`` when it is not a defined quantity.
+
+    The denominator is ``entry_price * size``, the cost basis of the
+    position. That can legitimately be zero (or non-finite) in several
+    situations that are ordinary rather than exceptional:
+
+    - A spot holding discovered on the exchange with no recorded entry
+      price (``entry_price == 0.0``).
+    - A closed or not-yet-opened position (``size == 0``).
+    - Upstream data that is momentarily ``inf``/``nan``.
+
+    In every one of those cases there is no cost basis to measure a
+    percentage against, so this returns ``None`` rather than ``0``: a
+    fabricated 0% would read as "flat" (a real measurement), which is a
+    different claim from "unknown" (no measurement is possible). Callers
+    should omit the field, or pass the field through as ``None``, rather
+    than ever substituting a fake zero.
+
+    Args:
+        pnl: Profit/loss in quote currency.
+        entry_price: Position entry price. May legitimately be 0.0 for a
+            spot holding with no cost basis.
+        size: Position size.
+
+    Returns:
+        The PnL percentage, or ``None`` if it is undefined or unsafe to
+        compute (zero/near-zero or non-finite denominator, or a
+        non-finite input).
+    """
+    if not (math.isfinite(pnl) and math.isfinite(entry_price) and math.isfinite(size)):
+        return None
+
+    denominator = entry_price * size
+    if not math.isfinite(denominator) or abs(denominator) < _DUST:
+        return None
+
+    return (pnl / denominator) * 100
+
+
 class TradingLogger:
-    """Specialized logger for trading operations."""
+    """Specialized logger for trading operations.
+
+    Logging must never be able to crash the code path it is observing.
+    Every public method here degrades to a simpler, best-effort log line
+    on unexpected failure (a malformed record, a bad kwarg, a renderer
+    error) instead of letting the exception propagate into the caller.
+    Programming errors are not silently discarded: they are still emitted,
+    just as a plain log line rather than raised.
+    """
 
     def __init__(self, name: str):
         """Initialize trading logger.
@@ -105,6 +161,29 @@ class TradingLogger:
             name: Logger name
         """
         self.logger = get_logger(name)
+
+    def _safe_log(self, log_method, event: str, **fields) -> None:
+        """Emit a structured log record without ever raising.
+
+        Args:
+            log_method: Bound structlog method to call (e.g. self.logger.info).
+            event: Event name.
+            **fields: Structured fields for the record.
+        """
+        try:
+            log_method(event, **fields)
+        except Exception as exc:  # noqa: BLE001 - logging must never crash the caller
+            try:
+                self.logger.warning(
+                    "log_degraded",
+                    original_event=event,
+                    reason=str(exc),
+                )
+            except Exception:
+                # Even the degraded log line failed (e.g. logger itself is
+                # broken). There is nothing further that can be safely done
+                # from a logging call; swallow rather than crash the caller.
+                pass
 
     def log_trade(
         self,
@@ -125,7 +204,8 @@ class TradingLogger:
             order_id: Order ID if available
             **kwargs: Additional context
         """
-        self.logger.info(
+        self._safe_log(
+            self.logger.info,
             "trade_executed",
             action=action,
             pair=pair,
@@ -153,15 +233,23 @@ class TradingLogger:
             current_price: Current price
             pnl: Profit/loss
             **kwargs: Additional context
+
+        Note:
+            ``pnl_pct`` is ``None`` when the percentage is not a defined
+            quantity (no cost basis, e.g. a spot holding with
+            ``entry_price == 0.0``, or a zero/non-finite size or price).
+            A missing cost basis is reported as unknown, never as a
+            fabricated 0%, since 0% would misleadingly read as "flat".
         """
-        self.logger.info(
+        self._safe_log(
+            self.logger.info,
             "position_update",
             pair=pair,
             size=size,
             entry_price=entry_price,
             current_price=current_price,
             pnl=pnl,
-            pnl_pct=(pnl / (entry_price * size) * 100) if size > 0 else 0,
+            pnl_pct=_safe_pnl_pct(pnl, entry_price, size),
             **kwargs
         )
 
@@ -181,7 +269,8 @@ class TradingLogger:
             **kwargs: Additional context
         """
         log_method = self.logger.warning if severity == 'warning' else self.logger.critical
-        log_method(
+        self._safe_log(
+            log_method,
             "risk_event",
             event_type=event_type,
             severity=severity,
@@ -206,7 +295,8 @@ class TradingLogger:
             duration: Execution duration in seconds
             **kwargs: Additional context
         """
-        self.logger.info(
+        self._safe_log(
+            self.logger.info,
             "agent_action",
             agent=agent,
             action=action,
@@ -222,9 +312,19 @@ class TradingLogger:
             error: Exception object
             context: Additional context information
         """
-        self.logger.error(
+        try:
+            error_type = type(error).__name__
+            error_message = str(error)
+        except Exception:
+            # Even rendering the exception itself failed; fall back to
+            # something that cannot raise.
+            error_type = "UnknownError"
+            error_message = "<unrenderable error>"
+
+        self._safe_log(
+            self.logger.error,
             "error_occurred",
-            error_type=type(error).__name__,
-            error_message=str(error),
+            error_type=error_type,
+            error_message=error_message,
             **(context or {})
         )
