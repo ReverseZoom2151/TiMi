@@ -104,53 +104,17 @@ gitignored; `.env.example` documents every variable, including the live unlock.
 ## Architecture
 
 The paper separates expensive reasoning from time-sensitive execution across
-three stages. Stages I and III exist in this repository; stage II is
-implemented but not wired into the run path.
+three stages. Stage I develops strategies offline, stage II refines their
+parameters, and stage III executes them with low latency.
 
-```mermaid
-graph TB
-    subgraph OFFLINE["OFFLINE"]
-        subgraph POLICY["Stage I: policy, implemented and called"]
-            A[Macro analysis] -->|general strategies| B[Strategy adaptation]
-            B -->|pair-specific parameters| D[Bot configuration]
-        end
+Stages I and III exist here and run. Stage II is implemented but never called:
+`BotEvolutionAgent` and `FeedbackReflectionAgent` are constructed in `main.py`
+and no code path invokes them. The bot code the first of them produces is
+parsed for syntax and stored as a string.
 
-        subgraph OPT["Stage II: optimisation, implemented but not called"]
-            C[Bot evolution] -.-> F[Feedback reflection]
-        end
-    end
-
-    D -->|deploy| LIVE
-
-    subgraph LIVE["LIVE"]
-        subgraph DEPLOY["Stage III: deployment, implemented and called"]
-            I[Market monitor] --> J[Grid order placement]
-            J --> K[Position tracking]
-            K --> L[Risk checks]
-            L --> M[Profit taking]
-        end
-    end
-```
-
-The dotted stage II path reflects reality: `BotEvolutionAgent` and
-`FeedbackReflectionAgent` are constructed in `main.py` and never invoked. The
-bot code the first of them produces is parsed for syntax and stored as a
-string. **Nothing in this repository executes LLM-generated code**, and there is
-no path by which it could: a search for `exec`, `eval`, `compile` and for any
-write of a `.py` file returns nothing.
-
-The risk-check step in stage III is drawn because the paper specifies it and the
-code for it exists. It is not currently called. See the validation section.
-
-## Core workflow
-
-```text
-market data
-  → macro analysis agent, general strategies
-  → strategy adaptation agent, pair-specific parameters
-  → bot engine, grid orders sized from volatility
-  → position and risk tracking
-```
+**Nothing in this repository executes LLM-generated code**, and there is no path
+by which it could: a search for `exec`, `eval`, `compile` and for any write of a
+`.py` file returns nothing.
 
 ## Configuration
 
