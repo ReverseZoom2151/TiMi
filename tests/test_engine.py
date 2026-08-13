@@ -681,6 +681,107 @@ async def test_mismatched_distributions_place_nothing():
     assert exchange.created == []
 
 
+async def test_the_neutral_entry_coefficient_is_a_no_op():
+    """1.0 must reproduce the ungeared ladder exactly, not approximately.
+
+    `entry_coefficient` used to be plumbed into the bot configuration and read
+    by nothing. Giving it a meaning is only safe if the neutral value leaves
+    today's geometry untouched, so this compares against the arithmetic the
+    engine performed before the coefficient existed.
+    """
+    bot = build_bot(entry_coefficient=1.0)
+    volatility = 0.02
+
+    orders = bot._calculate_orders(current_price=100.0, volatility=volatility)
+    buys = [o for o in orders if o['side'] == OrderSide.BUY]
+
+    assert len(buys) == len(bot.config.price_distribution)
+    for order, exponent in zip(buys, bot.config.price_distribution):
+        assert order['price'] == 100.0 * ((1 - volatility) ** exponent)
+
+    assert bot._entry_depth(volatility) == volatility
+
+
+async def test_a_low_entry_coefficient_tightens_the_buy_ladder():
+    """Below 1.0 the buy levels sit closer to spot, and only the buy levels."""
+    volatility = 0.02
+    neutral = build_bot(entry_coefficient=1.0)
+    tight = build_bot(entry_coefficient=0.5)
+    neutral.position_manager.add_position("BTC/USDT", size=1.0, entry_price=100.0)
+    tight.position_manager.add_position("BTC/USDT", size=1.0, entry_price=100.0)
+
+    base = neutral._calculate_orders(100.0, volatility)
+    geared = tight._calculate_orders(100.0, volatility)
+
+    base_buys = [o['price'] for o in base if o['side'] == OrderSide.BUY]
+    geared_buys = [o['price'] for o in geared if o['side'] == OrderSide.BUY]
+    assert all(g > b for g, b in zip(geared_buys, base_buys))
+    assert all(price < 100.0 for price in geared_buys)
+
+    # The sell ladder is built from Φ alone and must not have moved.
+    base_sells = [o['price'] for o in base if o['side'] == OrderSide.SELL]
+    geared_sells = [o['price'] for o in geared if o['side'] == OrderSide.SELL]
+    assert base_sells == geared_sells
+    assert base_sells
+
+
+async def test_a_high_entry_coefficient_widens_the_buy_ladder():
+    """Above 1.0 the buy levels sit further below spot."""
+    volatility = 0.02
+    neutral = build_bot(entry_coefficient=1.0)
+    wide = build_bot(entry_coefficient=2.0)
+
+    base_buys = [
+        o['price'] for o in neutral._calculate_orders(100.0, volatility)
+        if o['side'] == OrderSide.BUY
+    ]
+    wide_buys = [
+        o['price'] for o in wide._calculate_orders(100.0, volatility)
+        if o['side'] == OrderSide.BUY
+    ]
+
+    assert all(w < b for w, b in zip(wide_buys, base_buys))
+    assert wide._entry_depth(volatility) == pytest.approx(0.04)
+
+
+async def test_a_widened_ladder_is_not_then_refused_by_the_price_check():
+    """The deviation bound has to follow the ladder it is bounding."""
+    wide = build_bot(entry_coefficient=2.0)
+    volatility = 0.02
+
+    tolerance = wide._grid_price_tolerance(volatility)
+    deepest = min(
+        o['price'] for o in wide._calculate_orders(100.0, volatility)
+        if o['side'] == OrderSide.BUY
+    )
+
+    assert (100.0 - deepest) / 100.0 <= tolerance + 1e-12
+
+
+@pytest.mark.parametrize(
+    "coefficient",
+    [0.0, -1.0, 100.0, 0.01, float("nan"), float("inf"), None, "0.8"]
+)
+async def test_an_unusable_entry_coefficient_falls_back_to_neutral(coefficient):
+    """A knob set to nonsense must not silently reshape the grid."""
+    bot = build_bot(entry_coefficient=coefficient)
+
+    assert bot._entry_coefficient() == 1.0
+    assert bot._entry_depth(0.02) == 0.02
+
+
+async def test_the_entry_depth_is_clamped_below_one():
+    """`(1 - depth) ** exponent` is not a price once depth reaches 1.0."""
+    bot = build_bot(entry_coefficient=5.0)
+
+    assert bot._entry_depth(0.5) == pytest.approx(0.99)
+
+    orders = bot._calculate_orders(current_price=100.0, volatility=0.5)
+    buys = [o for o in orders if o['side'] == OrderSide.BUY]
+    assert buys
+    assert all(o['price'] > 0 for o in buys)
+
+
 async def test_quantity_proportions_must_sum_to_one():
     """Nothing validated the proportions, so the allocation was not the
     allocation the configuration described."""

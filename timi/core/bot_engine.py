@@ -48,6 +48,18 @@ GRID_PRICE_DP = 8
 #: Quantities below this are treated as nothing.
 DUST_SIZE = 1e-12
 
+#: Bounds accepted for `entry_coefficient`. Below the lower bound the buy
+#: ladder sits so close to spot that every level is effectively a market order;
+#: above the upper bound it sits so far below that nothing ever fills. Anything
+#: outside is a configuration mistake, not a strategy.
+ENTRY_COEFFICIENT_MIN = 0.1
+ENTRY_COEFFICIENT_MAX = 5.0
+
+#: Hard ceiling on the scaled entry depth. `(1 - depth) ** exponent` stops
+#: being a price at depth >= 1: the base goes to zero or negative, and a
+#: negative base with a fractional exponent is not even a real number.
+MAX_ENTRY_DEPTH = 0.99
+
 #: Identifies a grid level: side and price.
 GridKey = Tuple[str, float]
 
@@ -79,10 +91,18 @@ class BotConfig:
     # H: Profit/loss thresholds
     profit_loss_thresholds: List[float] = None
 
-    # Scaling coefficients
+    # Scaling coefficients applied to the SIZE of every grid quantity.
     market_cap_coefficient: float = 1.0
     funding_rate_coefficient: float = 1.0
-    entry_coefficient: float = 0.8
+
+    # ce: entry aggression. Multiplies Φ, and only Φ, and only on the BUY side:
+    # a buy level sits at `price * (1 - Φ × ce) ** MP[i]`. It does not touch
+    # the quantity, the sell ladder or the profit targets, so the shape of the
+    # distribution is unchanged and only the ladder's distance from spot moves.
+    # 1.0 is neutral and reproduces the ungeared grid exactly. Below 1.0 the
+    # ladder tightens towards spot (fills sooner, thinner margin per rung);
+    # above 1.0 it widens away from spot (fills less often, wider margin).
+    entry_coefficient: float = 1.0
 
     # λ: Position size divisor
     position_size_divisor: int = 10
@@ -399,6 +419,73 @@ class TradingBot:
             )
         return usable
 
+    def _entry_coefficient(self) -> float:
+        """The validated entry aggression multiplier, ce.
+
+        Applied to Φ on the buy side only. A value outside
+        [ENTRY_COEFFICIENT_MIN, ENTRY_COEFFICIENT_MAX], or one that is not a
+        finite number, is a configuration mistake rather than an instruction,
+        so it is reported and 1.0 is used instead.
+
+        Returns:
+            ce, or 1.0 when the configured value cannot be used
+        """
+        coefficient = self.config.entry_coefficient
+
+        if isinstance(coefficient, bool) or not isinstance(coefficient, (int, float)):
+            usable = False
+        elif not math.isfinite(coefficient):
+            usable = False
+        else:
+            usable = ENTRY_COEFFICIENT_MIN <= coefficient <= ENTRY_COEFFICIENT_MAX
+
+        if not usable:
+            self.logger.logger.warning(
+                "entry_coefficient_invalid",
+                pair=self.pair,
+                entry_coefficient=coefficient,
+                minimum=ENTRY_COEFFICIENT_MIN,
+                maximum=ENTRY_COEFFICIENT_MAX,
+                message=(
+                    "Entry coefficient must be a finite number within bounds; "
+                    "falling back to 1.0 for this cycle"
+                )
+            )
+            return 1.0
+
+        return float(coefficient)
+
+    def _entry_depth(self, volatility: float) -> float:
+        """How far below spot the buy ladder is measured from, Φ × ce.
+
+        This is the quantity the buy side raises to each MP exponent, in place
+        of the raw Φ that the sell side and the profit targets keep using. At
+        ce of 1.0 it is Φ itself, unchanged bit for bit.
+
+        Args:
+            volatility: Φ as a fraction of price, already known usable
+
+        Returns:
+            Scaled depth, strictly between 0 and 1
+        """
+        depth = volatility * self._entry_coefficient()
+
+        if depth >= MAX_ENTRY_DEPTH:
+            self.logger.logger.warning(
+                "entry_depth_clamped",
+                pair=self.pair,
+                volatility=volatility,
+                depth=depth,
+                clamped_to=MAX_ENTRY_DEPTH,
+                message=(
+                    "Φ scaled by the entry coefficient reaches or passes 1.0, "
+                    "where a buy level stops being a price"
+                )
+            )
+            depth = MAX_ENTRY_DEPTH
+
+        return depth
+
     def _distributions_usable(self) -> bool:
         """Validate the price and quantity distributions against each other.
 
@@ -468,8 +555,18 @@ class TradingBot:
     ) -> List[Dict[str, Any]]:
         """Calculate order specifications (Algorithm 1, lines 9-12).
 
-        Pi = Precent × (1 ± Φ)^MP[i]
+        Buy:  Pi = Precent × (1 - Φ × ce)^MP[i]
+        Sell: Pi = Precent × (1 + Φ)^MP[i]
         Qi = A × MQ[i] × cm × cf
+
+        ce is `entry_coefficient`, and it multiplies Φ on the buy side alone.
+        It moves the whole buy ladder nearer to or further from spot without
+        touching MP, so the operator can bias entries more or less aggressive
+        without reshaping the distribution. At the neutral value of 1.0 the buy
+        price is exactly `Precent × (1 - Φ)^MP[i]`. Sell prices, quantities and
+        the profit targets in `_monitor_positions` never see it: on spot a sell
+        is an exit against a basis that was already paid, and geared exits
+        would be a different strategy.
 
         The sell side is bounded by inventory. On spot a sell that is not
         covered by held base currency simply fails at the exchange, so the sell
@@ -494,6 +591,7 @@ class TradingBot:
 
         orders: List[Dict[str, Any]] = []
         sellable = self._sellable_inventory()
+        entry_depth = self._entry_depth(volatility)
 
         levels = list(zip(
             self.config.price_distribution,
@@ -502,7 +600,7 @@ class TradingBot:
 
         for i, (price_exp, qty_prop) in enumerate(levels):
             # Buy order: price below current
-            buy_price = current_price * ((1 - volatility) ** price_exp)
+            buy_price = current_price * ((1 - entry_depth) ** price_exp)
             if buy_price > 0 and math.isfinite(buy_price):
                 buy_quantity = (
                     self.config.capital_per_pair *
@@ -566,9 +664,12 @@ class TradingBot:
 
         The configured deviation limit describes an order meant to execute now.
         A grid level is meant to rest away from the market, and the deepest one
-        sits at `(1 ± Φ) ** max(MP)`. The bound returned here is that distance
-        plus the configured slack, so the check still rejects a price built
-        from a corrupted Φ or a stale reference without rejecting the strategy.
+        sits at `(1 - Φ × ce) ** max(MP)` below or `(1 + Φ) ** max(MP)` above.
+        The bound returned here is that distance plus the configured slack, so
+        the check still rejects a price built from a corrupted Φ or a stale
+        reference without rejecting the strategy. The entry coefficient enters
+        the lower bound for the same reason it enters the buy price: a widened
+        ladder that the risk gate then refuses is not a widened ladder.
 
         Args:
             volatility: Φ as a fraction of price
@@ -578,7 +679,7 @@ class TradingBot:
         """
         exponents = self.config.price_distribution or [1.0]
         deepest = max(exponents)
-        below = 1 - ((1 - volatility) ** deepest)
+        below = 1 - ((1 - self._entry_depth(volatility)) ** deepest)
         above = ((1 + volatility) ** deepest) - 1
 
         slack = 0.0
@@ -1418,6 +1519,16 @@ class BotEngine:
         nothing passed them, which made two of the three multipliers
         permanently 1.0 whatever the file said.
 
+        `strategy.entry_coefficient` is the third, and until now it was read
+        and then never used by anything downstream. It now multiplies Φ on the
+        buy side of the grid: a buy level rests at
+        `price × (1 - Φ × entry_coefficient) ** MP[i]`. 1.0 is neutral, below
+        1.0 tightens the buy ladder towards spot and above 1.0 widens it away.
+        It changes neither order quantities nor the sell ladder nor the profit
+        targets. A configured value away from 1.0 is logged when the bot
+        configuration is built, because it was inert before and any value
+        already in the file now has an effect it did not have.
+
         Args:
             **overrides: Values that beat the configured ones
 
@@ -1454,6 +1565,18 @@ class BotEngine:
             'stop_loss_pct': self.config.risk.stop_loss_pct,
         }
         values.update({k: v for k, v in overrides.items() if v is not None})
+
+        entry_coefficient = values.get('entry_coefficient')
+        if entry_coefficient != 1.0:
+            self.logger.logger.info(
+                "entry_coefficient_active",
+                entry_coefficient=entry_coefficient,
+                message=(
+                    "Buy levels rest at price * (1 - volatility * "
+                    "entry_coefficient) ** exponent; set it to 1.0 for the "
+                    "ungeared ladder"
+                )
+            )
 
         return BotConfig(**values)
 

@@ -88,7 +88,13 @@ strategy:
   # Scaling coefficients
   market_cap_coefficient: 1.0
   funding_rate_coefficient: 1.0
-  entry_coefficient: 0.8
+  # Multiplies the volatility on the BUY side only, so entries can be biased
+  # without reshaping price_distribution. 1.0 is neutral and reproduces the
+  # geometry every test and simulation was written against; below 1.0 the buy
+  # ladder sits closer to spot, above 1.0 further away. This shipped as 0.8
+  # while the value was inert, so it is set to neutral rather than silently
+  # tightening the ladder now that it is wired up.
+  entry_coefficient: 1.0
 
 # Risk Management
 risk:
