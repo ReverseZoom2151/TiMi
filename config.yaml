@@ -69,8 +69,9 @@ strategy:
   # Volume requirement (minimum 24h volume in USD)
   min_volume: 1000000
 
-  # Φreq: Minimum volatility requirement (%)
-  min_volatility: 0.5
+  # Φreq: Minimum volatility requirement, as a FRACTION of price, not a
+  # percentage. 0.005 is 0.5%, measured over lookback_period minutes.
+  min_volatility: 0.005
 
   # A: Capital allocation per pair (USD)
   capital_per_pair: 100
