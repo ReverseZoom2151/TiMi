@@ -1,0 +1,142 @@
+name: CI
+
+# This repository places real orders with real money when it is unlocked, so
+# the pipeline is deliberately small and deliberately unprivileged. Nothing
+# here is allowed to reach an exchange.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only by default. No job here writes to the repository, publishes a
+# package or comments on a pull request, so nothing needs more.
+permissions:
+  contents: read
+
+# One run per ref. A superseded run is cancelled rather than left to finish,
+# because only the newest result is ever acted on.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # IMPORTANT: no secret is passed to this job, and none may ever be
+      # added to it. CI having no exchange or LLM credential is a safety
+      # property of this project, not an oversight. The suite is designed to
+      # run without one: tests/conftest.py blocks outbound sockets to remote
+      # hosts and strips every credential from the environment, so a test that
+      # reaches for the network fails loudly instead of quietly touching an
+      # account. Tests marked `network` are deselected by default and are
+      # never run here. If a change to this repository ever seems to need a
+      # credential in CI, the change is wrong, not this comment.
+      - name: Run tests
+        run: python -m pytest
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # Deliberately permissive to start with. The full default rule set
+      # currently reports 15 findings on this tree (unused imports, bare
+      # excepts, and similar), and a job that is red on arrival gets ignored
+      # rather than fixed. E9 is syntax and IO errors, F63/F7 are broken
+      # comparisons and statements, F82 is undefined names: the subset that
+      # catches code which cannot work, which in a system that transmits
+      # orders is the part worth blocking a merge over.
+      #
+      # The rule set should widen over time. The intended path is to clean up
+      # the existing findings and then move this configuration into
+      # pyproject.toml with the default set enabled, tightening in steps
+      # rather than in one unreviewable sweep.
+      - name: Ruff
+        run: ruff check --select E9,F63,F7,F82 .
+
+  secret-scan:
+    name: secret-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      # A floor, not a scanner. This is a grep for a handful of high
+      # confidence credential shapes, with no dependency and nothing to
+      # install, so it cannot silently stop working. It will not catch a
+      # credential that does not match one of these shapes, it does not read
+      # git history (only the checked-out tree), and it is no substitute for a
+      # real secret scanner such as GitHub secret scanning, gitleaks or
+      # trufflehog. Treat a pass as "the obvious mistakes are absent", never
+      # as "there are no secrets in this repository".
+      #
+      # Excluded: .env.example (documents variable names and carries
+      # deliberate placeholders), docs/ and *.md (prose and the paper PDF,
+      # where a hex string is far more likely to be a hash or a citation than
+      # a key).
+      - name: Scan for committed credentials
+        run: |
+          set -uo pipefail
+
+          # sk- followed by 32+ alphanumerics, and sk-ant- followed by 40+
+          # key characters: the two LLM provider key shapes this project uses.
+          # AKIA + 16 uppercase alphanumerics: AWS access key IDs.
+          # A bounded 64 hex character token: private keys, HMAC secrets and
+          # exchange secrets are commonly written this way.
+          PATTERN='sk-[A-Za-z0-9]{32,}|sk-ant-[A-Za-z0-9_-]{40,}|AKIA[0-9A-Z]{16}|(^|[^A-Za-z0-9])[0-9a-fA-F]{64}([^A-Za-z0-9]|$)'
+
+          set +e
+          hits=$(grep -rInE "$PATTERN" \
+            --binary-files=without-match \
+            --exclude='*.md' \
+            --exclude='.env.example' \
+            --exclude-dir='docs' \
+            --exclude-dir='.git' \
+            --exclude-dir='.pytest_cache' \
+            --exclude-dir='logs' \
+            .)
+          status=$?
+          set -e
+
+          if [ "$status" -eq 0 ]; then
+            echo "Possible committed credentials found:"
+            echo "$hits"
+            echo
+            echo "If a match is a placeholder or a test fixture, change the"
+            echo "fixture rather than widening the exclusions. If a match is a"
+            echo "real credential, revoke it at the provider first: removing"
+            echo "the commit does not un-leak it."
+            exit 1
+          fi
+
+          if [ "$status" -ne 1 ]; then
+            echo "grep failed with status $status; treating that as a failure."
+            exit 1
+          fi
+
+          echo "No high confidence credential patterns found."
