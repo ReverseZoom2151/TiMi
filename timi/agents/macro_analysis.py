@@ -6,11 +6,56 @@ Uses semantic analysis (φ) capability to analyze market data and generate macro
 
 from typing import List, Dict, Any
 
-from .base import BaseAgent, AgentResult
+from .base import BaseAgent, AgentResult, response_was_truncated
 from ..llm.client import LLMClient
 from ..data.market_data import MarketDataManager
 from ..data.indicators import TechnicalIndicators
 from ..utils.config import Config
+
+
+# The only strategy names the rest of the system knows how to run. A reply may
+# recommend from this catalogue and nothing else: a name the engine has no
+# implementation for is not a strategy, it is a typo with consequences.
+STRATEGY_CATALOGUE: Dict[str, Dict[str, Any]] = {
+    'grid': {
+        'description': 'Grid trading strategy',
+        'conditions': {'volatility': 'any', 'trend': 'any'},
+        'applicable_to': 'all_pairs',
+    },
+    'trend': {
+        'description': 'Trend following strategy',
+        'conditions': {'volatility': 'medium', 'trend': 'uptrend'},
+        'applicable_to': 'trending_pairs',
+    },
+    'mean-reversion': {
+        'description': 'Mean reversion strategy for range-bound markets',
+        'conditions': {'volatility': 'low_to_medium', 'trend': 'sideways'},
+        'applicable_to': 'sideways_pairs',
+    },
+    'stat-arb': {
+        'description': 'Statistical arbitrage strategy',
+        'conditions': {'volatility': 'any', 'trend': 'any'},
+        'applicable_to': 'correlated_pairs',
+    },
+}
+
+# Spellings a reply is likely to use for a catalogue entry.
+STRATEGY_ALIASES: Dict[str, str] = {
+    'grid': 'grid',
+    'trend': 'trend',
+    'trend following': 'trend',
+    'trend-following': 'trend',
+    'mean-reversion': 'mean-reversion',
+    'mean reversion': 'mean-reversion',
+    'stat-arb': 'stat-arb',
+    'stat arb': 'stat-arb',
+    'statistical arbitrage': 'stat-arb',
+}
+
+# Upper limit on how many strategies leave this agent. Each one becomes a
+# candidate for every pair downstream, so an unbounded list is an unbounded
+# amount of work and an unbounded number of chances to pick badly.
+MAX_STRATEGIES = 4
 
 
 class MacroAnalysisAgent(BaseAgent):
@@ -35,8 +80,15 @@ class MacroAnalysisAgent(BaseAgent):
         """
         super().__init__("MacroAnalysisAgent", llm_client, config)
         self.market_data = market_data
-        self.indicators_config = config.get('agents.macro_analysis.indicators', [])
-        self.time_windows = config.get('agents.macro_analysis.time_windows', [1, 7, 30])
+        # Read through self.config, which the base class has already defaulted.
+        # Reading the parameter instead makes the agent unconstructable without
+        # one, which is exactly when a caller most wants the defaults.
+        self.indicators_config = self.config.get(
+            'agents.macro_analysis.indicators', []
+        )
+        self.time_windows = self.config.get(
+            'agents.macro_analysis.time_windows', [1, 7, 30]
+        )
 
     async def execute(
         self,
@@ -187,7 +239,12 @@ class MacroAnalysisAgent(BaseAgent):
         self,
         pattern_analysis: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
-        """Generate general trading strategies using LLM.
+        """Generate general trading strategies.
+
+        The reply is used, but only as a source of strategy names drawn from
+        `STRATEGY_CATALOGUE`; the measured market conditions always contribute
+        a baseline of their own. Nothing numeric and nothing free-form from the
+        reply survives this method.
 
         Args:
             pattern_analysis: Analysis of market patterns
@@ -204,8 +261,21 @@ class MacroAnalysisAgent(BaseAgent):
             system_prompt=self._get_system_prompt()
         )
 
+        content = getattr(response, 'content', '')
+
+        # A reply cut short at the token limit is still readable text, and the
+        # names it did manage to emit are as good as any other. It is recorded
+        # rather than discarded, but the deterministic baseline below is what
+        # guarantees the list is never empty.
+        if response_was_truncated(response):
+            self.log_fallback(
+                'generate_strategies',
+                'reply truncated at the token limit',
+                finish_reason=getattr(response, 'finish_reason', None)
+            )
+
         # Parse strategies from response
-        strategies = self._parse_strategies(response.content, pattern_analysis)
+        strategies = self._parse_strategies(content, pattern_analysis)
 
         return strategies
 
@@ -267,24 +337,61 @@ Avoid:
         llm_response: str,
         pattern_analysis: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
-        """Parse strategies from LLM response.
+        """Combine the deterministic strategy ladder with the reply's picks.
+
+        The measured market conditions decide the baseline, so the list is
+        never empty and never depends on a reply arriving intact. The reply
+        may then add strategies, but only ones named in `STRATEGY_CATALOGUE`:
+        a recommendation the engine cannot run is discarded silently rather
+        than carried forward as a name nothing implements. The result is
+        capped at `MAX_STRATEGIES`.
 
         Args:
             llm_response: LLM response text
             pattern_analysis: Original pattern analysis
 
         Returns:
-            List of parsed strategies
+            List of strategies, at least one, each with a runnable name
         """
-        # For MVP, we'll extract strategies based on keywords
-        # In production, you'd want more sophisticated parsing
 
-        strategies = []
+        strategies = self._baseline_strategies(pattern_analysis)
+        chosen = {entry['name'] for entry in strategies}
 
-        # Default strategy based on market conditions
+        for name in self._suggested_names(llm_response):
+            if len(strategies) >= MAX_STRATEGIES:
+                break
+            if name in chosen:
+                continue
+
+            template = STRATEGY_CATALOGUE[name]
+            strategies.append({
+                'name': name,
+                'description': template['description'],
+                'conditions': dict(template['conditions']),
+                'applicable_to': template['applicable_to'],
+                'source': 'macro_analysis.suggested'
+            })
+            chosen.add(name)
+
+        return strategies[:MAX_STRATEGIES]
+
+    def _baseline_strategies(
+        self,
+        pattern_analysis: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Derive strategies from the measured market conditions alone.
+
+        Args:
+            pattern_analysis: Pattern analysis results
+
+        Returns:
+            List of strategies, always containing at least one
+        """
+
+        strategies: List[Dict[str, Any]] = []
+
         avg_vol = pattern_analysis.get('avg_volatility', 0)
         trend_dist = pattern_analysis.get('trend_distribution', {})
-        dominant_trend = max(trend_dist, key=trend_dist.get) if trend_dist else 'sideways'
 
         # Grid strategy for high volatility
         if avg_vol > 0.02:  # >2% volatility
@@ -327,3 +434,35 @@ Avoid:
             })
 
         return strategies
+
+    def _suggested_names(self, llm_response: Any) -> List[str]:
+        """Read catalogue strategy names out of a reply, in order of mention.
+
+        Args:
+            llm_response: LLM response text, or anything
+
+        Returns:
+            Catalogue names the reply mentioned, deduplicated
+        """
+
+        if not isinstance(llm_response, str) or not llm_response:
+            return []
+
+        lowered = llm_response.lower()
+
+        # Longest aliases first, so 'mean reversion' is not read as 'trend'
+        # merely because a shorter alias appears earlier in the text.
+        positions: List[tuple] = []
+        for alias in sorted(STRATEGY_ALIASES, key=len, reverse=True):
+            index = lowered.find(alias)
+            if index != -1:
+                positions.append((index, STRATEGY_ALIASES[alias]))
+
+        seen = set()
+        names = []
+        for _, name in sorted(positions):
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+
+        return names

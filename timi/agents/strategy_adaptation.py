@@ -7,10 +7,21 @@ Uses semantic analysis (φ) and mathematical reasoning (γ) to adapt strategies.
 import json
 from typing import List, Dict, Any
 
-from .base import BaseAgent, AgentResult
+from .base import (
+    PARAMETER_BOUNDS,
+    AgentResult,
+    BaseAgent,
+    extract_json_object,
+    response_was_truncated,
+    validate_numeric_parameters,
+)
 from ..llm.client import LLMClient
 from ..data.market_data import MarketDataManager
 from ..utils.config import Config
+
+# Strategy names the engine can run. A selection outside this set is a
+# selection of nothing, so it falls back to the first offered strategy.
+KNOWN_STRATEGIES = frozenset({'grid', 'trend', 'mean-reversion', 'stat-arb'})
 
 
 class StrategyAdaptationAgent(BaseAgent):
@@ -211,23 +222,37 @@ Respond with JSON format: {{"selected_strategy": "strategy_name", "reason": "exp
     def _parse_strategy_selection(self, llm_response: str) -> str:
         """Parse strategy selection from LLM response.
 
+        A selection is honoured only when it names a strategy the engine can
+        run. Anything else, including a refusal or a reply with no JSON in it,
+        falls through to a keyword scan and finally to 'grid', which is the
+        documented default.
+
         Args:
             llm_response: LLM response text
 
         Returns:
-            Selected strategy name
+            Selected strategy name, always one of KNOWN_STRATEGIES
         """
-        # Try to parse JSON
-        try:
-            # Look for JSON in response
-            start_idx = llm_response.find('{')
-            end_idx = llm_response.rfind('}') + 1
-            if start_idx != -1 and end_idx > start_idx:
-                json_str = llm_response[start_idx:end_idx]
-                data = json.loads(json_str)
-                return data.get('selected_strategy', 'grid')
-        except:
-            pass
+
+        if not isinstance(llm_response, str):
+            self.log_fallback(
+                'parse_strategy_selection',
+                'reply was not text',
+                default='grid'
+            )
+            return 'grid'
+
+        data = extract_json_object(llm_response)
+        if data is not None:
+            selected = data.get('selected_strategy')
+            if isinstance(selected, str) and selected in KNOWN_STRATEGIES:
+                return selected
+
+            self.log_fallback(
+                'parse_strategy_selection',
+                'selection was absent or not a known strategy',
+                selected=repr(selected)
+            )
 
         # Fallback: look for strategy keywords
         response_lower = llm_response.lower()
@@ -282,36 +307,83 @@ Format response as JSON with parameter names and values."""
         )
 
         # Parse parameters from response
-        parameters = self._parse_parameters(response.content, pair_profile)
+        parameters = self._parse_parameters(response, pair_profile)
 
         return parameters
 
     def _parse_parameters(
         self,
-        llm_response: str,
+        response: Any,
         pair_profile: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Parse parameters from LLM response.
+        """Turn a reply into parameters, one validated value at a time.
+
+        The deterministic parameters computed from the pair's own volatility
+        and risk category are the floor: they are always produced first, and a
+        proposed value replaces one only if it is a finite number of the right
+        type inside the band declared in `PARAMETER_BOUNDS`. Unrecognised keys
+        are dropped, so nothing the engine has never heard of travels onwards.
+        Every rejection and every fallback is logged.
 
         Args:
-            llm_response: LLM response
+            response: LLM response object, or the reply text
+            pair_profile: Pair profile
+
+        Returns:
+            Parameter dictionary containing only validated numeric values
+        """
+
+        defaults = self._default_parameters(pair_profile)
+
+        content = response if isinstance(response, str) else getattr(
+            response, 'content', None
+        )
+
+        if response_was_truncated(response):
+            self.log_fallback(
+                'parse_parameters',
+                'reply truncated at the token limit',
+                pair=pair_profile.get('pair')
+            )
+
+        candidate = extract_json_object(content)
+        if candidate is None:
+            self.log_fallback(
+                'parse_parameters',
+                'no decodable JSON object in the reply',
+                pair=pair_profile.get('pair')
+            )
+            return defaults
+
+        parameters, rejected = validate_numeric_parameters(
+            candidate,
+            PARAMETER_BOUNDS,
+            defaults
+        )
+
+        if rejected:
+            self.log_fallback(
+                'parse_parameters',
+                'proposed values failed validation and were defaulted',
+                pair=pair_profile.get('pair'),
+                rejected=sorted(rejected)
+            )
+
+        return parameters
+
+    def _default_parameters(self, pair_profile: Dict[str, Any]) -> Dict[str, Any]:
+        """Compute the documented safe parameters for a pair.
+
+        These are derived from the pair's own measured volatility and risk
+        category, so they are usable on their own with no reply at all.
+
+        Args:
             pair_profile: Pair profile
 
         Returns:
             Parameter dictionary
         """
-        # Try to extract JSON
-        try:
-            start_idx = llm_response.find('{')
-            end_idx = llm_response.rfind('}') + 1
-            if start_idx != -1 and end_idx > start_idx:
-                json_str = llm_response[start_idx:end_idx]
-                params = json.loads(json_str)
-                return params
-        except:
-            pass
 
-        # Fallback: calculate parameters mathematically
         volatility = pair_profile['volatility']
         risk_level = pair_profile['risk_category']
 

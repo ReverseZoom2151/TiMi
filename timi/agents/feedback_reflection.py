@@ -6,11 +6,34 @@ Uses mathematical reasoning (γ) to solve optimization problems:
 """
 
 import json
-from typing import Dict, Any, List    
+import math
+from typing import Any, Dict, List, Optional
 
-from .base import BaseAgent, AgentResult
+from .base import (
+    PARAMETER_BOUNDS,
+    AgentResult,
+    BaseAgent,
+    extract_json_object,
+    response_was_truncated,
+    validate_numeric_parameters,
+)
 from ..llm.client import LLMClient
 from ..utils.config import Config
+
+
+# How far a proposal is allowed to move a parameter in one reflection. A
+# proposal that wants to triple an allocation is not an optimisation, it is a
+# different plan, and it has to arrive one bounded step at a time.
+MAX_INCREASE_FACTOR = 1.5
+MAX_DECREASE_FACTOR = 0.25
+
+# Floor on the deterministic de-risking below, so a bad run shrinks the book
+# rather than reducing it to a size that cannot trade at all.
+MIN_RISK_SCALE = 0.25
+
+# Win rate the de-risking treats as par. Below it, size comes down in
+# proportion to the shortfall.
+TARGET_WIN_RATE = 0.5
 
 
 class FeedbackReflectionAgent(BaseAgent):
@@ -35,10 +58,15 @@ class FeedbackReflectionAgent(BaseAgent):
             config: Configuration
         """
         super().__init__("FeedbackReflectionAgent", llm_client, config)
-        self.optimization_method = config.get(
-            'agents.feedback_reflection.method',
-            'linear_programming'
-        )
+
+        # The drawdown the account is willing to spend before it is considered
+        # to have used up its budget. Configured as a percentage; the de-risking
+        # below works in fractions.
+        max_drawdown_pct = self.config.get('risk.max_drawdown', 20)
+        try:
+            self.drawdown_budget = max(float(max_drawdown_pct) / 100.0, 0.01)
+        except (TypeError, ValueError):
+            self.drawdown_budget = 0.20
 
     async def execute(
         self,
@@ -244,7 +272,7 @@ class FeedbackReflectionAgent(BaseAgent):
         )
 
         # Parse constraints from response
-        constraints = self._parse_constraints(response.content)
+        constraints = self._parse_constraints(response)
 
         return constraints
 
@@ -314,28 +342,44 @@ Use rigorous mathematical reasoning to:
 
 Output precise mathematical formulations with clear variable definitions."""
 
-    def _parse_constraints(self, llm_response: str) -> Dict[str, Any]:
+    def _parse_constraints(self, response: Any) -> Dict[str, Any]:
         """Parse constraints from LLM response.
 
+        Constraints are descriptive only: they are recorded, and they are fed
+        back into the next prompt, but nothing in this dictionary sizes an
+        order. When no object can be decoded the reply is kept verbatim under
+        'description' so an operator can read what was actually said, and the
+        fallback is logged.
+
         Args:
-            llm_response: LLM response
+            response: LLM response object, or the reply text
 
         Returns:
             Parsed constraints
         """
-        # Try to extract JSON
-        try:
-            start_idx = llm_response.find('{')
-            end_idx = llm_response.rfind('}') + 1
-            if start_idx != -1 and end_idx > start_idx:
-                json_str = llm_response[start_idx:end_idx]
-                return json.loads(json_str)
-        except:
-            pass
 
-        # Fallback: extract constraint text
+        content = response if isinstance(response, str) else getattr(
+            response, 'content', ''
+        )
+
+        if response_was_truncated(response):
+            self.log_fallback(
+                'parse_constraints',
+                'reply truncated at the token limit'
+            )
+
+        parsed = extract_json_object(content)
+        if parsed is not None:
+            return parsed
+
+        self.log_fallback(
+            'parse_constraints',
+            'no decodable JSON object in the reply'
+        )
+
+        # Fallback: keep the text, claim no constraints
         return {
-            'description': llm_response,
+            'description': content if isinstance(content, str) else '',
             'constraints': []
         }
 
@@ -371,8 +415,9 @@ Output precise mathematical formulations with clear variable definitions."""
 
         # Parse optimal parameters
         optimal_params = self._parse_optimal_parameters(
-            response.content,
-            current_parameters
+            response,
+            current_parameters,
+            categorized_feedback
         )
 
         return optimal_params
@@ -431,38 +476,206 @@ Format as JSON with parameter names and values."""
 
     def _parse_optimal_parameters(
         self,
-        llm_response: str,
-        current_parameters: Dict[str, Any]
+        response: Any,
+        current_parameters: Dict[str, Any],
+        categorized_feedback: Optional[Dict[str, List[Any]]] = None
     ) -> Dict[str, Any]:
-        """Parse optimal parameters from response.
+        """Turn a reply into parameters that are safe to hand onwards.
+
+        Three gates, in order. A proposed value must decode, it must pass the
+        type, finiteness and range checks in `PARAMETER_BOUNDS`, and it must
+        sit within one bounded step of the value it is replacing. Whatever
+        survives is then scaled by `_risk_scale_factor`, so a run that lost
+        money cannot come back with a larger book than it started with. When
+        nothing decodes, the de-risked current parameters are the answer.
 
         Args:
-            llm_response: LLM response
+            response: LLM response object, or the reply text
             current_parameters: Current parameters
+            categorized_feedback: Categorized feedback, used for de-risking
 
         Returns:
-            Optimal parameters
+            Optimal parameters, every numeric value validated and bounded
         """
-        # Try to extract JSON
-        try:
-            start_idx = llm_response.find('{')
-            end_idx = llm_response.rfind('}') + 1
-            if start_idx != -1 and end_idx > start_idx:
-                json_str = llm_response[start_idx:end_idx]
-                params = json.loads(json_str)
-                return params
-        except:
-            pass
 
-        # Fallback: make conservative adjustments
-        optimal = current_parameters.copy()
+        feedback = categorized_feedback or {}
+        scale = self._risk_scale_factor(feedback)
 
-        # Reduce position sizes if risk issues
-        if any(key in optimal for key in ['capital_allocation', 'max_position_pct']):
-            optimal['capital_allocation'] = optimal.get('capital_allocation', 100) * 0.8
-            optimal['max_position_pct'] = optimal.get('max_position_pct', 10) * 0.8
+        baseline, baseline_rejected = validate_numeric_parameters(
+            current_parameters,
+            PARAMETER_BOUNDS,
+            {}
+        )
 
-        return optimal
+        if baseline_rejected:
+            self.log_fallback(
+                'optimize_parameters',
+                'current parameters failed validation and were dropped',
+                rejected=sorted(baseline_rejected)
+            )
+
+        content = response if isinstance(response, str) else getattr(
+            response, 'content', None
+        )
+
+        if response_was_truncated(response):
+            self.log_fallback(
+                'optimize_parameters',
+                'reply truncated at the token limit'
+            )
+
+        candidate = extract_json_object(content)
+
+        if candidate is None:
+            self.log_fallback(
+                'optimize_parameters',
+                'no decodable JSON object in the reply; holding current '
+                'parameters and applying the risk scale',
+                risk_scale=scale
+            )
+            return self._apply_scale(baseline, scale)
+
+        proposed, rejected = validate_numeric_parameters(
+            candidate,
+            PARAMETER_BOUNDS,
+            baseline
+        )
+
+        if rejected:
+            self.log_fallback(
+                'optimize_parameters',
+                'proposed values failed validation and were held at current',
+                rejected=sorted(rejected)
+            )
+
+        stepped = self._limit_step(baseline, proposed)
+
+        return self._apply_scale(stepped, scale)
+
+    def _risk_scale_factor(
+        self,
+        categorized_feedback: Dict[str, List[Any]]
+    ) -> float:
+        """Compute how far to shrink exposure given what the run actually did.
+
+        Two signals contribute, and the smaller wins:
+
+        * drawdown, as a fraction of the configured drawdown budget, so a run
+          that has spent its whole budget trades at `MIN_RISK_SCALE`;
+        * win rate, as a fraction of `TARGET_WIN_RATE`, so a strategy losing
+          more often than it wins sizes down in proportion.
+
+        With no usable signal the factor is 1.0, which leaves the parameters
+        alone. That is deliberate: an arbitrary shrink on every reflection is
+        not risk management, it is decay.
+
+        Args:
+            categorized_feedback: Categorized feedback
+
+        Returns:
+            A factor in [MIN_RISK_SCALE, 1.0]
+        """
+
+        scale = 1.0
+
+        for item in categorized_feedback.get('risk', []):
+            if not isinstance(item, dict) or item.get('type') != 'drawdown':
+                continue
+            drawdown = self._as_number(item.get('value'))
+            if drawdown is None or drawdown <= 0:
+                continue
+            scale = min(scale, 1.0 - min(drawdown / self.drawdown_budget, 1.0))
+
+        for item in categorized_feedback.get('performance', []):
+            if not isinstance(item, dict) or item.get('type') != 'win_rate':
+                continue
+            win_rate = self._as_number(item.get('value'))
+            if win_rate is None or win_rate < 0 or win_rate >= TARGET_WIN_RATE:
+                continue
+            scale = min(scale, win_rate / TARGET_WIN_RATE)
+
+        return max(MIN_RISK_SCALE, min(1.0, scale))
+
+    @staticmethod
+    def _as_number(value: Any) -> Optional[float]:
+        """Return a finite float, or None for anything that is not one.
+
+        Args:
+            value: Candidate value
+
+        Returns:
+            The value as a float, or None
+        """
+
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else None
+
+    @staticmethod
+    def _limit_step(
+        baseline: Dict[str, Any],
+        proposed: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Clamp each proposed value to one bounded step from the current one.
+
+        Args:
+            baseline: Validated current parameters
+            proposed: Validated proposed parameters
+
+        Returns:
+            Proposed parameters, each within its step limit
+        """
+
+        stepped = dict(proposed)
+
+        for name, current in baseline.items():
+            if name not in stepped:
+                continue
+            if isinstance(current, bool) or not isinstance(current, (int, float)):
+                continue
+            if current <= 0:
+                continue
+
+            upper = current * MAX_INCREASE_FACTOR
+            lower = current * MAX_DECREASE_FACTOR
+            value = min(max(float(stepped[name]), lower), upper)
+
+            bound = PARAMETER_BOUNDS.get(name)
+            stepped[name] = int(round(value)) if bound and bound.integer else value
+
+        return stepped
+
+    @staticmethod
+    def _apply_scale(parameters: Dict[str, Any], scale: float) -> Dict[str, Any]:
+        """Scale the exposure parameters down by a de-risking factor.
+
+        Only the two values that decide how much money is at stake are scaled.
+        Grid geometry and stop distances are not exposure, and shrinking them
+        alongside would tighten the strategy rather than de-risk it.
+
+        Args:
+            parameters: Validated parameters
+            scale: Factor in [MIN_RISK_SCALE, 1.0]
+
+        Returns:
+            Parameters with exposure scaled
+        """
+
+        scaled = dict(parameters)
+
+        if scale >= 1.0:
+            return scaled
+
+        for name in ('capital_allocation', 'max_position_pct'):
+            value = scaled.get(name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            bound = PARAMETER_BOUNDS[name]
+            scaled[name] = max(float(value) * scale, bound.minimum)
+
+        return scaled
 
     def _determine_optimization_level(
         self,

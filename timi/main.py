@@ -196,6 +196,112 @@ class TiMiSystem:
         self.logger.info("Policy stage complete", pairs_configured=len(pair_configs))
         return pair_configs
 
+    async def run_optimization_stage(
+        self,
+        pair_configs: dict,
+        feedback_by_pair: Optional[dict] = None
+    ) -> dict:
+        """Run Optimization Stage: bot artefacts and parameter refinement.
+
+        Two things happen per pair, and neither of them can place an order.
+
+        The bot evolution agent produces a trading bot as source text. It is
+        checked for syntax and stored under the pair's 'bot' key with
+        `executable` set to False. Nothing in this system executes it: it is an
+        artefact for a person to read, and the engine keeps running the code in
+        `timi.core` that was written and reviewed by hand.
+
+        The feedback reflection agent then refines the pair's parameters, but
+        only when there is feedback worth reflecting on. On a cold start there
+        is none, so the call is skipped rather than paid for. Whatever comes
+        back has already been bounded inside the agent, and the allocation is
+        bounded again at the risk layer before deployment, so a refinement can
+        only ever narrow what deployment accepts.
+
+        Args:
+            pair_configs: Pair configurations from the policy stage
+            feedback_by_pair: Deployment or simulation feedback, keyed by pair
+
+        Returns:
+            The pair configurations, with refined parameters where available
+        """
+
+        self.logger.info("=" * 60)
+        self.logger.info("STAGE II: OPTIMIZATION - Bots and Parameter Refinement")
+        self.logger.info("=" * 60)
+
+        feedback_by_pair = feedback_by_pair or {}
+        evolution_enabled = self.config.get('agents.bot_evolution.enabled', True)
+        reflection_enabled = self.config.get(
+            'agents.feedback_reflection.enabled', True
+        )
+
+        for pair, config_data in pair_configs.items():
+            strategy = config_data.get('strategy', {})
+            parameters = config_data.get('parameters', {})
+
+            if evolution_enabled:
+                evolution_result = await self.bot_evolution_agent.execute(
+                    strategy,
+                    parameters,
+                    pair
+                )
+
+                if evolution_result.success:
+                    # Stored, never run.
+                    config_data['bot'] = evolution_result.data
+                    self.logger.info(
+                        "Bot artefact generated (inert, not executed)",
+                        pair=pair,
+                        strategy=strategy.get('name')
+                    )
+                else:
+                    self.logger.warning(
+                        "Bot artefact generation failed",
+                        pair=pair,
+                        message=evolution_result.message
+                    )
+
+            feedback = feedback_by_pair.get(pair) or {}
+
+            if not reflection_enabled or not feedback:
+                self.logger.info(
+                    "Skipping reflection, no feedback to reflect on",
+                    pair=pair
+                )
+                continue
+
+            reflection_result = await self.feedback_agent.execute(
+                config_data.get('bot', {'pair': pair, 'parameters': parameters}),
+                feedback
+            )
+
+            if not reflection_result.success:
+                self.logger.warning(
+                    "Reflection failed, keeping policy stage parameters",
+                    pair=pair,
+                    message=reflection_result.message
+                )
+                continue
+
+            refined = reflection_result.data.get('optimal_parameters') or {}
+            if refined:
+                config_data['parameters'] = refined
+                config_data['optimization_level'] = reflection_result.data.get(
+                    'optimization_level'
+                )
+                self.logger.info(
+                    "Parameters refined",
+                    pair=pair,
+                    level=config_data['optimization_level']
+                )
+
+        self.logger.info(
+            "Optimization stage complete",
+            pairs_processed=len(pair_configs)
+        )
+        return pair_configs
+
     async def deploy_bots(self, pair_configs: dict):
         """Deploy trading bots for configured pairs.
 
@@ -260,6 +366,10 @@ class TiMiSystem:
         if not pair_configs:
             self.logger.error("No valid pair configurations generated")
             return
+
+        # Run optimization stage. Bot artefacts are generated and stored
+        # inert, and parameters are refined only where feedback exists.
+        pair_configs = await self.run_optimization_stage(pair_configs)
 
         # Deploy bots
         await self.deploy_bots(pair_configs)

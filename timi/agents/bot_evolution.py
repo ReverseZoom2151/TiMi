@@ -6,13 +6,20 @@ Follows three programming laws:
 1. Functional cohesion - one responsibility per component
 2. Unidirectional dependency - dependencies flow from higher to lower layers
 3. Parameter externalization - adjustable values centrally managed
+
+The code this agent produces is inert. It is parsed with `ast.parse` to check
+that it is syntactically Python and then kept as a string for an operator to
+read. Nothing here, and nothing downstream, may execute it: no `exec`, no
+`eval`, no `compile`, no import machinery, and no writing it to a module file.
+Generated text that runs is generated text that trades, and the only thing
+allowed to place an order in this system is code a person has reviewed.
 """
 
 import ast
 import re
-from typing import Dict, Any
+from typing import Any, Dict
 
-from .base import BaseAgent, AgentResult
+from .base import BaseAgent, AgentResult, response_was_truncated
 from ..llm.client import LLMClient
 from ..utils.config import Config
 
@@ -38,7 +45,11 @@ class BotEvolutionAgent(BaseAgent):
             config: Configuration
         """
         super().__init__("BotEvolutionAgent", llm_client, config)
-        self.enforce_laws = config.get('agents.bot_evolution.enforce_laws', True)
+        # Read through self.config, which the base class has already defaulted,
+        # so the agent is constructable without one.
+        self.enforce_laws = self.config.get(
+            'agents.bot_evolution.enforce_laws', True
+        )
 
     async def execute(
         self,
@@ -67,6 +78,7 @@ class BotEvolutionAgent(BaseAgent):
             bot_code = await self._generate_bot_code(strategy, parameters, pair)
 
             # Validate code
+            validation = {'valid': None, 'issues': []}
             if self.enforce_laws:
                 validation = self._validate_code(bot_code)
                 if not validation['valid']:
@@ -75,12 +87,16 @@ class BotEvolutionAgent(BaseAgent):
                         issues=validation['issues']
                     )
 
-            # Create bot metadata
+            # Create bot metadata. `executable` states the contract in the
+            # payload itself: this string is a reviewable artefact, never
+            # something to run.
             bot_metadata = {
                 'pair': pair,
                 'strategy': strategy['name'],
                 'parameters': parameters,
                 'code': bot_code,
+                'executable': False,
+                'validation': validation,
                 'version': '1.0.0'
             }
 
@@ -119,7 +135,7 @@ class BotEvolutionAgent(BaseAgent):
             pair: Trading pair
 
         Returns:
-            Python code for trading bot
+            Python code for trading bot, as an inert string
         """
         # Build prompt for code generation
         prompt = self._build_code_generation_prompt(strategy, parameters, pair)
@@ -130,8 +146,15 @@ class BotEvolutionAgent(BaseAgent):
             system_prompt=self._get_code_system_prompt()
         )
 
+        if response_was_truncated(response):
+            self.log_fallback(
+                'generate_bot_code',
+                'reply truncated at the token limit; the artefact is partial',
+                pair=pair
+            )
+
         # Extract code from response
-        bot_code = self._extract_code(response.content)
+        bot_code = self._extract_code(getattr(response, 'content', ''))
 
         return bot_code
 
@@ -234,15 +257,18 @@ Output only the Python code, no explanations outside of code comments."""
 
         return "\n".join(lines)
 
-    def _extract_code(self, llm_response: str) -> str:
+    def _extract_code(self, llm_response: Any) -> str:
         """Extract Python code from LLM response.
 
         Args:
             llm_response: LLM response text
 
         Returns:
-            Extracted Python code
+            Extracted Python code, as an inert string
         """
+        if not isinstance(llm_response, str):
+            return ''
+
         # Try to extract code block
         code_pattern = r'```python\n(.*?)```'
         matches = re.findall(code_pattern, llm_response, re.DOTALL)
@@ -261,7 +287,10 @@ Output only the Python code, no explanations outside of code comments."""
         return llm_response.strip()
 
     def _validate_code(self, code: str) -> Dict[str, Any]:
-        """Validate generated code.
+        """Validate generated code by reading it, never by running it.
+
+        `ast.parse` builds a tree and evaluates nothing, which is why it is the
+        only inspection used here.
 
         Args:
             code: Python code to validate
@@ -271,10 +300,13 @@ Output only the Python code, no explanations outside of code comments."""
         """
         issues = []
 
+        if not isinstance(code, str) or not code.strip():
+            return {'valid': False, 'issues': ['Empty code artefact']}
+
         # Check if code is parseable
         try:
             ast.parse(code)
-        except SyntaxError as e:
+        except (SyntaxError, ValueError) as e:
             issues.append(f"Syntax error: {str(e)}")
             return {'valid': False, 'issues': issues}
 
@@ -335,11 +367,22 @@ Output only the Python code, no explanations outside of code comments."""
                 system_prompt=self._get_code_system_prompt()
             )
 
-            refined_code = self._extract_code(response.content)
+            if response_was_truncated(response):
+                self.log_fallback(
+                    'refine_bot',
+                    'reply truncated at the token limit; the artefact is partial',
+                    level=optimization_level
+                )
+
+            refined_code = self._extract_code(getattr(response, 'content', ''))
 
             return AgentResult(
                 success=True,
-                data={'code': refined_code, 'level': optimization_level},
+                data={
+                    'code': refined_code,
+                    'level': optimization_level,
+                    'executable': False
+                },
                 message=f"Bot refined at {optimization_level} level"
             )
 
