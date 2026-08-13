@@ -110,13 +110,9 @@ class TiMiSystem:
 
         self.logger.info("All agents initialized")
 
-        # Initialize execution components
-        self.bot_engine = BotEngine(
-            self.exchange,
-            self.market_data,
-            self.config
-        )
-
+        # Initialize execution components. The position book is built first
+        # because both the risk gate and the engine read from it: it is the
+        # only place a cost basis exists, since a spot balance carries none.
         self.position_manager = PositionManager()
 
         self.risk_manager = RiskManager(
@@ -124,9 +120,25 @@ class TiMiSystem:
             self.position_manager
         )
 
-        # Initialize capital tracking
+        # Capital tracking must exist before the gate can size anything, so it
+        # is set up before the engine that will call through it.
         initial_capital = self.config.get('risk.initial_capital', 10000)
         self.risk_manager.initialize_capital(initial_capital)
+
+        # The engine shares both, so every order it places is checked and
+        # every fill it takes lands in the same book the gate measures.
+        self.bot_engine = BotEngine(
+            self.exchange,
+            self.market_data,
+            self.config,
+            position_manager=self.position_manager,
+            risk_manager=self.risk_manager
+        )
+
+        if self.risk_manager.emergency_stop:
+            self.logger.error(
+                "Emergency stop is set; the system will not place any orders"
+            )
 
         self.logger.info("Execution components initialized")
 
@@ -197,16 +209,28 @@ class TiMiSystem:
         for pair, config_data in pair_configs.items():
             parameters = config_data['parameters']
 
-            # Create bot configuration
-            bot_config = BotConfig(
-                execution_interval=self.config.strategy.execution_interval,
-                lookback_period=self.config.strategy.lookback_period,
-                min_volume=self.config.strategy.min_volume,
-                min_volatility=self.config.strategy.min_volatility,
-                capital_per_pair=parameters.get('capital_allocation', 100),
-                price_distribution=self.config.strategy.price_distribution,
-                quantity_distribution=self.config.strategy.quantity_distribution,
-                profit_loss_thresholds=self.config.strategy.profit_loss_thresholds
+            # The allocation arrives as free-form JSON from the strategy
+            # stage and multiplies every order quantity in the grid. It is
+            # bounded at the risk layer before it can size anything; a value
+            # that cannot be made safe costs this pair its bot, not the run.
+            try:
+                capital_per_pair = self.risk_manager.validate_capital_allocation(
+                    parameters.get('capital_allocation',
+                                   self.config.strategy.capital_per_pair)
+                )
+            except Exception as e:
+                self.logger.error(
+                    "Rejected capital allocation",
+                    pair=pair,
+                    reason=str(e)
+                )
+                continue
+
+            # Build from configuration, so the scaling coefficients and the
+            # position size divisor are the configured ones rather than the
+            # dataclass defaults.
+            bot_config = self.bot_engine.build_bot_config(
+                capital_per_pair=capital_per_pair
             )
 
             # Add bot to engine
