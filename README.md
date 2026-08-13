@@ -1,833 +1,236 @@
-# TiMi - Trade in Minutes
+<h1 align="center">TiMi</h1>
 
-## A Rationality-Driven Multi-Agent System for Quantitative Financial Trading
+<p align="center"><strong>Trade in Minutes: a rationality-driven multi-agent system for quantitative trading</strong></p>
 
-TiMi is a production-ready algorithmic trading system that leverages Large Language Models (LLMs) and specialized AI agents to develop, optimize, and execute quantitative trading strategies with minute-level precision. Built on cutting-edge research, TiMi implements a three-stage architecture that separates complex reasoning from time-sensitive execution, achieving both comprehensive strategy development and quantitative-level efficiency.
+An implementation of the ICLR-submitted paper
+[*Trade in Minutes! Rationality-Driven Agentic System for Quantitative Financial
+Trading*](https://arxiv.org/abs/2510.04787). Four LLM agents develop and refine
+grid-trading strategies offline, and a low-latency bot executes them, so the
+expensive reasoning is decoupled from the time-sensitive execution.
 
----
+This repository is under active correction. It is a research implementation, not
+a trading product, and the section below on what is not yet safe is the most
+important part of this document.
 
-## Table of Contents
+## Status
 
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [Architecture](#architecture)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [System Components](#system-components)
-- [Risk Management Implementation](#risk-management-implementation)
-- [Development](#development)
-- [Testing](#testing)
-- [Performance](#performance)
-- [Contributing](#contributing)
-- [License](#license)
-- [Citation](#citation)
-- [Disclaimer](#disclaimer)
+The system trades **spot**, on Binance, through ccxt. It does not trade futures:
+there is no leverage, no margin and no liquidation in this codebase, and the
+sell side of a grid can only sell inventory that is actually held.
 
----
+Recent work has closed three defects that could each have caused real money to
+move without the operator intending it:
 
-## Overview
+- **A testnet setting that did not reach testnet.** The connector overrode two
+  ccxt endpoint entries by hand, which left the other endpoint groups pointed at
+  production while logging "initialized in TESTNET mode". It now uses
+  `set_sandbox_mode`, which moves every group, and this is covered by a test.
+- **A paper-trading gate that failed open.** `is_paper_trading()` compared the
+  mode string with no validation anywhere, so any value other than exactly
+  `paper` transmitted live orders. `backtest` was one of those values. Mode is
+  now validated against an allow-list and refuses anything else by name.
+- **Safety flags parsed case-sensitively.** `PAPER_TRADING_MODE=True` resolved to
+  live, and `BINANCE_TESTNET=True` resolved to production, because both were
+  compared with `== 'true'`. Both failed towards danger. Parsing is now
+  case-insensitive and an unreadable value falls back towards safety.
 
-TiMi (Trade in Minutes) implements the system described in the research paper "Trade in Minutes! Rationality-Driven Agentic System for Quantitative Financial Trading" (arXiv:2510.04787). Unlike traditional trading systems that rely on human emotions or simple rule-based approaches, TiMi achieves **mechanical rationality** through specialized AI agents that handle semantic analysis, code programming, and mathematical reasoning.
+## What still requires validation
 
-### Why TiMi?
+**Nothing in this repository has been run against an exchange, testnet or
+otherwise, since the corrections began.** Verification is a 215 test suite that
+executes the logic with the network blocked, plus reading of the ccxt source. No
+order has been placed, no fill has been observed, and no strategy has been
+evaluated for profitability by anyone working on this code.
 
-**Traditional Challenges:**
+The execution engine still carries known defects, and they are the reason live
+trading is gated. As of this commit:
 
-- Anthropomorphic trading agents introduce emotional biases
-- Reliance on peripheral information creates temporal lags
-- Continuous inference during deployment causes latency
-- Difficulty adapting to volatile market dynamics
+- The grid is re-placed on every cycle and resting orders are never cancelled,
+  so open orders accumulate against a fixed capital allocation.
+- There is no stop loss in the engine. `risk.stop_loss_pct` is configured and
+  nothing reads it.
+- The risk checks exist and are not called. `check_order_risk`,
+  `check_drawdown`, `check_position_risk` and `check_price_deviation` have no
+  call sites, so drawdown protection and position limits cannot fire, and the
+  emergency stop cannot be raised.
+- `PositionManager` and `OrderManager` are never fed, so position and order
+  statistics remain empty and the risk layer sees no state.
+- Paper mode does not simulate fills, so its statistics are structurally zero. A
+  paper run cannot currently demonstrate that a strategy works.
 
-**TiMi's Solution:**
+Work on these is in progress. Until it lands, treat this repository as something
+to read and test rather than something to run with capital.
 
-- Rationality-driven decision making without emotional bias
-- Focus on objective technical indicators with dynamic windows
-- Decoupled analysis and execution for low-latency trading
-- Hierarchical optimization for robust strategy refinement
+The published performance figures in the paper (annual return, Sharpe ratio,
+action latency) are the paper's own measurements of the authors' system. Nothing
+in this repository has reproduced them, and nothing here measures latency.
 
----
+## Safety model
 
-## Key Features
+Live trading requires two deliberate acts, in different places, plus a
+confirmation:
 
-### Multi-Agent System
-
-- **4 Specialized Agents** with distinct LLM capabilities
-- **Macro Analysis Agent (Ama)**: Identifies market patterns using semantic analysis
-- **Strategy Adaptation Agent (Asa)**: Customizes strategies per trading pair
-- **Bot Evolution Agent (Abe)**: Generates executable Python trading bots
-- **Feedback Reflection Agent (Afr)**: Optimizes parameters mathematically
-
-### Trading Capabilities
-
-- **Minute-Level Execution**: High-frequency trading with low latency
-- **Grid Trading Strategy**: Implements Algorithm 1 from the paper
-- **Dynamic Parameters**: Volatility-based order placement and sizing
-- **Multi-Pair Support**: Trade 200+ pairs simultaneously
-- **Paper Trading Mode**: Safe testing without real capital
-
-### Risk Configuration
-
-- **Drawdown Protection**: Automatic emergency stop at configurable thresholds
-- **Position Limits**: Size and count restrictions
-- **Stop Loss**: Per-position risk controls
-- **Price Deviation Checks**: Prevent execution at abnormal prices
-- **Real-Time Monitoring**: Comprehensive risk reporting
-
-### Infrastructure
-
-- **Multi-Provider LLM**: OpenAI, Anthropic support
-- **Exchange Integration**: Binance with testnet support
-- **Technical Indicators**: 20+ indicators including SMA, EMA, RSI, MACD
-- **Structured Logging**: JSON logs with trade/position tracking
-- **Configuration-Driven**: YAML-based with environment overrides
-
----
-
-## Architecture
-
-TiMi implements a three-stage architecture that decouples strategy development from real-time execution:
-
-### Stage I: Policy (Offline)
-
-Complex reasoning and strategy development occur offline, leveraging specialized LLM capabilities:
-
-```text
-Market Data → Macro Analysis → General Strategies → Strategy Adaptation →
-Pair-Specific Strategies → Bot Evolution → Trading Bot Code
+```bash
+export TIMI_ALLOW_LIVE=1
+python run_timi.py --mode live --i-understand-the-risk --pairs BTC/USDT
 ```
 
-### Stage II: Optimization (Offline)
+Missing either the environment variable or the flag refuses to start, and the
+check runs before an authenticated exchange client is constructed. The
+confirmation prompt then prints the resolved endpoint host, the mode and the
+pairs, so the operator confirms against facts rather than a bare question.
 
-Prototype bots undergo simulation to gather feedback and iteratively optimize:
+Separately, startup asserts that the resolved endpoint matches the requested
+mode: any mode other than live must have landed on a testnet host, or the
+process refuses to continue. That assertion is what catches a testnet setting
+that silently did not take effect.
 
-```text
-Trading Bot → Simulation → Feedback Collection → Mathematical Reflection →
-Constraint Formulation → Parameter Optimization → Hierarchical Refinement
-```
-
-### Stage III: Deployment (Live)
-
-Thoroughly optimized bots execute with minimal latency:
-
-```text
-Optimized Bot → Market Monitor → Order Placement → Position Management →
-Risk Checks → Profit Taking → Statistics Reporting
-```
-
-**Efficiency Gain**: η = cagent/cbot, where cbot ≪ cagent, providing significant performance improvement as trading frequency increases.
-
-### System Flow Diagram
-
-```mermaid
-graph TB
-    subgraph OFFLINE["OFFLINE ENVIRONMENT"]
-        subgraph POLICY["STAGE I: POLICY - Strategy Development"]
-            A[Macro Analysis Agent<br/>Ama] -->|Market Patterns &<br/>General Strategies| B[Strategy Adaptation Agent<br/>Asa]
-            B -->|Pair-Specific<br/>Customization| C[Bot Evolution Agent<br/>Abe]
-            C -->|Trading Bot Code<br/>Python| D[Prototype Bot]
-        end
-
-        subgraph OPT["STAGE II: OPTIMIZATION - Parameter Refinement"]
-            D -->|Simulate| E[Simulation Environment]
-            E -->|Performance Metrics &<br/>Risk Events| F[Feedback Reflection Agent<br/>Afr]
-            F -->|Optimized Parameters<br/>& Constraints| G[Hierarchical Refinement]
-            G -->|Parameter → Function<br/>→ Strategy| H[Advanced Bot]
-        end
-    end
-
-    H -->|Deploy| LIVE
-
-    subgraph LIVE["LIVE ENVIRONMENT"]
-        subgraph DEPLOY["STAGE III: DEPLOYMENT - Minute-Level Trading"]
-            I[Market Monitor] -->|Real-time Data| J[Order Placement]
-            J -->|Limit Orders| K[Position Manager]
-            K -->|Risk Check| L[Risk Manager]
-            L -->|Approved| M[Profit Taking]
-            M -->|Trade Execution| N[Performance Stats]
-        end
-    end
-
-    style OFFLINE fill:#d4e8ff,stroke:#0047ab,stroke-width:4px,color:#000
-    style LIVE fill:#ffe4b3,stroke:#d97706,stroke-width:4px,color:#000
-    style POLICY fill:#e3f2ff,stroke:#1e40af,stroke-width:3px,color:#000
-    style OPT fill:#e3f2ff,stroke:#1e40af,stroke-width:3px,color:#000
-    style DEPLOY fill:#ffedd5,stroke:#ea580c,stroke-width:3px,color:#000
-    style A fill:#bfdbfe,stroke:#1e40af,stroke-width:2px,color:#000
-    style B fill:#bfdbfe,stroke:#1e40af,stroke-width:2px,color:#000
-    style C fill:#bfdbfe,stroke:#1e40af,stroke-width:2px,color:#000
-    style F fill:#bfdbfe,stroke:#1e40af,stroke-width:2px,color:#000
-    style I fill:#fed7aa,stroke:#ea580c,stroke-width:2px,color:#000
-    style J fill:#fed7aa,stroke:#ea580c,stroke-width:2px,color:#000
-    style K fill:#fed7aa,stroke:#ea580c,stroke-width:2px,color:#000
-    style L fill:#fed7aa,stroke:#ea580c,stroke-width:2px,color:#000
-```
-
----
-
-## Installation
-
-### Prerequisites
-
-- Python 3.9 or higher
-- pip package manager
-- API keys for LLM provider (OpenAI or Anthropic)
-- Exchange API credentials (Binance or compatible)
-
-### Step 1: Clone Repository
+## Install
 
 ```bash
 git clone https://github.com/ReverseZoom2151/TiMi.git
 cd TiMi
-```
 
-### Step 2: Create Virtual Environment
-
-```bash
-# Create virtual environment
 python -m venv venv
-
-# Activate virtual environment
-# On Windows:
-venv\Scripts\activate
-# On Linux/Mac:
-source venv/bin/activate
-```
-
-### Step 3: Install Dependencies
-
-```bash
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+
+cp .env.example .env            # then fill in your keys
 ```
 
-### Step 4: Configure Environment
+Python 3.9 or later. The `.env` file holds exchange and LLM credentials and is
+gitignored; `.env.example` documents every variable, including the live unlock.
 
-```bash
-# Copy environment template
-cp .env.example .env
+## Architecture
 
-# Edit .env with your API keys
-# Required:
-# - OPENAI_API_KEY or ANTHROPIC_API_KEY
-# - BINANCE_API_KEY
-# - BINANCE_API_SECRET
+The paper separates expensive reasoning from time-sensitive execution across
+three stages. Stages I and III exist in this repository; stage II is
+implemented but not wired into the run path.
+
+```mermaid
+graph TB
+    subgraph OFFLINE["OFFLINE"]
+        subgraph POLICY["Stage I: policy, implemented and called"]
+            A[Macro analysis] -->|general strategies| B[Strategy adaptation]
+            B -->|pair-specific parameters| D[Bot configuration]
+        end
+
+        subgraph OPT["Stage II: optimisation, implemented but not called"]
+            C[Bot evolution] -.-> F[Feedback reflection]
+        end
+    end
+
+    D -->|deploy| LIVE
+
+    subgraph LIVE["LIVE"]
+        subgraph DEPLOY["Stage III: deployment, implemented and called"]
+            I[Market monitor] --> J[Grid order placement]
+            J --> K[Position tracking]
+            K --> L[Risk checks]
+            L --> M[Profit taking]
+        end
+    end
 ```
 
-### Step 5: Verify Installation
+The dotted stage II path reflects reality: `BotEvolutionAgent` and
+`FeedbackReflectionAgent` are constructed in `main.py` and never invoked. The
+bot code the first of them produces is parsed for syntax and stored as a
+string. **Nothing in this repository executes LLM-generated code**, and there is
+no path by which it could: a search for `exec`, `eval`, `compile` and for any
+write of a `.py` file returns nothing.
 
-```bash
-python tests/test_system.py
-```
+The risk-check step in stage III is drawn because the paper specifies it and the
+code for it exists. It is not currently called. See the validation section.
 
-Expected output:
+## Core workflow
 
 ```text
-=== Testing Configuration ===
-[OK] Config loaded
-=== Testing LLM Client ===
-[OK] LLM client initialized
-=== Testing Exchange Connector ===
-[OK] Exchange connector created
-=== Testing Agents ===
-[OK] Agent classes loaded
-[OK] All systems operational!
+market data
+  → macro analysis agent, general strategies
+  → strategy adaptation agent, pair-specific parameters
+  → bot engine, grid orders sized from volatility
+  → position and risk tracking
 ```
-
----
-
-## Quick Start
-
-### 1. Paper Trading (Recommended)
-
-Start paper trading on BTC/USDT for 1 hour:
-
-```bash
-python run_timi.py --mode paper --pairs BTC/USDT --duration 1
-```
-
-Multiple pairs:
-
-```bash
-python run_timi.py --mode paper --pairs BTC/USDT ETH/USDT SOL/USDT --duration 24
-```
-
-### 2. Monitor Performance
-
-Watch real-time logs:
-
-```bash
-# In another terminal
-tail -f logs/timi.log
-```
-
-### 3. Review Statistics
-
-The system logs statistics every hour:
-
-```json
-{
-  "bot_stats": {
-    "BTC/USDT": {
-      "trades_executed": 15,
-      "total_pnl": 125.50,
-      "win_rate": 0.67
-    }
-  },
-  "positions": {
-    "open_positions": 2,
-    "total_pnl": 45.30,
-    "win_rate": 0.65
-  },
-  "risk": {
-    "current_drawdown": 0.02,
-    "emergency_stop": false
-  }
-}
-```
-
----
 
 ## Configuration
 
-TiMi uses `config.yaml` for system configuration. Key sections:
+`config.yaml` holds the system configuration and `.env` holds credentials and
+the safety flags. Every risk value is expressed as a percentage in the file and
+converted to a fraction internally, so `max_drawdown: 20` means 20 percent.
 
-### LLM Configuration
-
-```yaml
-llm:
-  semantic:
-    provider: openai  # openai, anthropic
-    model: gpt-5-2025-08-07
-    temperature: 0.7
-    max_tokens: 4000
-
-  code:
-    provider: openai
-    model: gpt-5-pro-2025-10-06
-    temperature: 0.3
-    max_tokens: 8000
-
-  reasoning:
-    provider: openai
-    model: gpt-5-pro-2025-10-06
-    temperature: 0.2
-    max_tokens: 4000
-```
-
-**Alternative Claude Configuration:**
-
-```yaml
-llm:
-  semantic:
-    provider: anthropic
-    model: claude-sonnet-4-5-20250514  # Smartest for complex tasks
-
-  code:
-    provider: anthropic
-    model: claude-sonnet-4-5-20250514  # Best for coding
-
-  reasoning:
-    provider: anthropic
-    model: claude-opus-4-1-20250514    # Specialized reasoning
-```
-
-### Trading Parameters
-
-```yaml
-strategy:
-  execution_interval: 1  # Minutes between execution cycles
-  lookback_period: 60    # Minutes for volatility calculation
-  min_volume: 1000000    # Minimum 24h volume (USD)
-  min_volatility: 0.005  # Minimum volatility (0.5%)
-  capital_per_pair: 100  # Capital allocation per pair (USD)
-
-  # Price distribution for grid levels (exponents)
-  price_distribution: [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]
-
-  # Quantity distribution (proportions)
-  quantity_distribution: [0.2, 0.2, 0.2, 0.15, 0.15, 0.05, 0.05]
-
-  # Profit/loss thresholds (multiples of volatility)
-  profit_loss_thresholds: [1.5, 2.0, 3.0, 5.0]
-```
-
-### Risk Management
-
-```yaml
-risk:
-  max_drawdown: 20          # Maximum drawdown percentage
-  max_position_pct: 10      # Maximum position as % of capital
-  max_concurrent_positions: 5
-  stop_loss_pct: 5          # Stop loss percentage
-  max_price_deviation: 2    # Maximum price deviation percentage
-```
-
----
+`min_volatility` is the exception worth knowing about: it is a **fraction**, not
+a percentage. It shipped as `0.5`, which demanded a 50 percent hourly range and
+meant no pair ever qualified, so the system placed no orders while appearing
+healthy. It is now `0.005`, which is 0.5 percent.
 
 ## Usage
 
-### Command Line Interface
+```bash
+# Paper trading, the default and the only mode that needs no unlock
+python run_timi.py --mode paper --pairs BTC/USDT --duration 1
+python run_timi.py --mode paper --pairs BTC/USDT ETH/USDT --duration 24
+```
+
+Note that paper mode does not yet simulate fills, so its statistics will be
+zero. See the validation section above.
+
+## Technical indicators
+
+Seven are implemented, in `timi/data/indicators.py`: SMA, EMA, RSI, MACD,
+Bollinger Bands, ATR and a volume moving average. Each returns NaN rather than a
+number for any window the available data cannot satisfy, so a short frame from a
+newly listed pair reports "not enough data" instead of a fabricated zero.
+
+The volatility measure used to size the grid is not a standard deviation. It is
+a normalised range over opens and closes, it ignores wicks and therefore
+understates the true range, and it scales with the lookback window so two
+different windows are not comparable. This is documented at the function rather
+than corrected, because the grid geometry is calibrated to it.
+
+## Tests
 
 ```bash
-python run_timi.py [OPTIONS]
+python -m pytest
 ```
 
-**Options:**
-
-- `--mode` : Trading mode (paper, live, backtest)
-- `--pairs` : Space-separated list of trading pairs
-- `--duration` : Duration in hours for paper/live trading
-- `--config` : Path to config file (default: config.yaml)
-
-**Examples:**
-
-```bash
-# Paper trade BTC for 24 hours
-python run_timi.py --mode paper --pairs BTC/USDT --duration 24
-
-# Paper trade multiple pairs for 1 hour
-python run_timi.py --mode paper --pairs BTC/USDT ETH/USDT BNB/USDT --duration 1
-
-# Use custom config
-python run_timi.py --mode paper --config my_config.yaml --pairs BTC/USDT
-```
-
-### Programmatic Usage
-
-```python
-import asyncio
-from timi.utils.config import Config
-from timi.main import TiMiSystem
-
-async def main():
-    # Initialize system
-    config = Config()
-    system = TiMiSystem(config)
-
-    await system.initialize()
-
-    # Run policy stage to generate strategies
-    pairs = ['BTC/USDT', 'ETH/USDT']
-    pair_configs = await system.run_policy_stage(pairs)
-
-    # Deploy trading bots
-    await system.deploy_bots(pair_configs)
-
-    # Cleanup
-    await system.shutdown()
-
-asyncio.run(main())
-```
-
-### Using Individual Agents
-
-```python
-import asyncio
-from timi.llm.client import LLMClient
-from timi.exchange.factory import ExchangeFactory
-from timi.data import MarketDataManager
-from timi.agents import MacroAnalysisAgent
-
-async def analyze_market():
-    # Setup components
-    llm_client = LLMClient()
-    exchange = ExchangeFactory.create_default_exchange()
-    market_data = MarketDataManager(exchange)
-
-    # Create macro analysis agent
-    agent = MacroAnalysisAgent(llm_client, market_data)
-
-    # Execute analysis
-    result = await agent.execute(
-        pairs=['BTC/USDT', 'ETH/USDT'],
-        time_window=7
-    )
-
-    print(f"Strategies: {result.data}")
-
-    await exchange.close()
-
-asyncio.run(analyze_market())
-```
-
----
-
-## System Components
-
-### Multi-Agent System Details
-
-#### Macro Analysis Agent (Ama)
-
-- **File**: `timi/agents/macro_analysis.py`
-- **Capability**: Semantic Analysis (φ)
-- **Function**: Identifies market patterns and generates general strategies
-- **Input**: Market data, technical indicators, time windows
-- **Output**: General trading strategies
-
-#### Strategy Adaptation Agent (Asa)
-
-- **File**: `timi/agents/strategy_adaptation.py`
-- **Capabilities**: Semantic Analysis (φ) + Mathematical Reasoning (γ)
-- **Function**: Customizes strategies for specific trading pairs
-- **Input**: General strategies, pair characteristics
-- **Output**: Pair-specific strategies with initialized parameters
-
-#### Bot Evolution Agent (Abe)
-
-- **File**: `timi/agents/bot_evolution.py`
-- **Capability**: Code Programming (ψ)
-- **Function**: Transforms strategies into executable Python code
-- **Input**: Strategy specifications, parameters
-- **Output**: Trading bot code following programming laws
-
-#### Feedback Reflection Agent (Afr)
-
-- **File**: `timi/agents/feedback_reflection.py`
-- **Capability**: Mathematical Reasoning (γ)
-- **Function**: Optimizes parameters through mathematical reflection
-- **Input**: Trading feedback, performance metrics
-- **Output**: Optimized parameters, refinement guidance
-
-### Trading Engine
-
-#### Bot Engine
-
-- **File**: `timi/core/bot_engine.py`
-- **Function**: Implements Algorithm 1 from paper
-- **Features**:
-  - Minute-level execution cycles
-  - Volatility calculation (Φ)
-  - Grid order placement
-  - Position monitoring
-  - Profit-taking logic
-
-#### Position Manager
-
-- **File**: `timi/core/position_manager.py`
-- **Function**: Tracks positions and calculates P&L
-- **Features**:
-  - Entry/exit tracking
-  - Realized & unrealized P&L
-  - Win rate statistics
-  - Position aggregation
-
-#### Order Manager
-
-- **File**: `timi/core/order_manager.py`
-- **Function**: Manages order lifecycle
-- **Features**:
-  - Active order tracking
-  - Fill monitoring
-  - Cancellation handling
-  - Fill rate statistics
-
-### Data Layer
-
-#### Market Data Manager
-
-- **File**: `timi/data/market_data.py`
-- **Functions**:
-  - OHLCV data retrieval with caching
-  - Volatility calculation (Algorithm 1)
-  - Pair qualification based on volume/volatility
-  - Market statistics aggregation
-
-#### Technical Indicators
-
-- **File**: `timi/data/indicators.py`
-- **Indicators**:
-  - SMA, EMA (moving averages)
-  - RSI (relative strength index)
-  - MACD (trend indicator)
-  - Bollinger Bands (volatility)
-  - ATR (average true range)
-  - Custom trend identification
-
-### Exchange Layer
-
-#### Binance Connector
-
-- **File**: `timi/exchange/binance.py`
-- **Features**:
-  - Futures trading via CCXT
-  - Testnet support (default)
-  - Order management
-  - Position tracking
-  - Market data retrieval
-
----
-
-## Risk Management Implementation
-
-TiMi implements comprehensive risk management:
-
-### Drawdown Protection
-
-- Monitors current capital against peak capital
-- Triggers emergency stop at configurable threshold (default: 20%)
-- Warning alerts at 75% of limit
-
-### Position Limits
-
-- Maximum concurrent positions (default: 5)
-- Maximum position size as % of capital (default: 10%)
-- Per-pair capital allocation
-
-### Stop Loss
-
-- Per-position stop loss (default: 5%)
-- Automatic position closure on breach
-- Configurable per strategy
-
-### Price Deviation
-
-- Checks order price against market price
-- Prevents execution during abnormal conditions
-- Configurable deviation threshold (default: 2%)
-
-### Emergency Controls
-
-- Manual emergency stop flag
-- Automatic halt on critical violations
-- Graceful shutdown procedures
-
-### Risk Reporting
-
-```python
-risk_report = risk_manager.get_risk_report()
-# Returns:
-{
-    'initial_capital': 10000,
-    'current_capital': 10500,
-    'peak_capital': 11000,
-    'current_drawdown': 0.045,
-    'max_drawdown_limit': 0.20,
-    'open_positions': 3,
-    'emergency_stop': False,
-    'violations_count': 0
-}
-```
-
----
-
-## Development
-
-### Project Structure
+215 tests, no network access and no credentials required.
+
+The suite cannot reach an exchange account, and that is enforced rather than
+assumed. Two autouse fixtures apply to every test: outbound connections to
+remote hosts raise and name the offending test, and every exchange and LLM
+credential is removed from the environment. Tests that genuinely need the
+network must be marked, and that marker is deselected by default. A meta-test
+suite asserts the guard rails themselves still work.
+
+Exchange behaviour is tested against a recording double rather than a mock, so
+assertions are about exactly what would have been transmitted.
+
+## Repository layout
 
 ```text
-TiMi/
-├── timi/                      # Main package
-│   ├── agents/                # Multi-agent system
-│   │   ├── base.py           # Base agent class
-│   │   ├── macro_analysis.py
-│   │   ├── strategy_adaptation.py
-│   │   ├── bot_evolution.py
-│   │   └── feedback_reflection.py
-│   ├── core/                  # Trading engine
-│   │   ├── bot_engine.py     # Algorithm 1 implementation
-│   │   ├── position_manager.py
-│   │   └── order_manager.py
-│   ├── data/                  # Market data
-│   │   ├── market_data.py
-│   │   └── indicators.py
-│   ├── exchange/              # Exchange connectors
-│   │   ├── base.py
-│   │   ├── binance.py
-│   │   └── factory.py
-│   ├── llm/                   # LLM integration
-│   │   ├── base.py
-│   │   └── client.py
-│   ├── risk/                  # Risk management
-│   │   ├── risk_manager.py
-│   │   └── constraints.py
-│   ├── utils/                 # Utilities
-│   │   ├── config.py
-│   │   └── logging.py
-│   └── main.py                # Main entry point
-├── tests/                     # Test suite
-│   ├── test_system.py        # System verification test
-│   ├── unit/
-│   └── integration/
-├── docs/                      # Documentation
-│   └── timi_arxiv_2510.04787.pdf  # Original research paper
-├── logs/                      # Log files (gitignored)
-├── data/                      # Data storage (gitignored)
-├── config.yaml                # Configuration
-├── .env.example               # Environment template
-├── requirements.txt           # Dependencies
-├── run_timi.py               # Run script
-└── README.md                 # This file
+timi/
+  agents/       four LLM agents; two are not currently called
+  core/         bot engine, position manager, order manager
+  data/         market data with caching, technical indicators
+  exchange/     ccxt connector, spot, with a testnet assertion
+  llm/          provider clients for OpenAI and Anthropic
+  risk/         risk manager and constraints; not yet wired into the order path
+  utils/        configuration, mode validation, structured logging
+tests/          215 tests, network blocked by default
+config.yaml     system configuration
+.env.example    credentials and safety flags
 ```
-
-### Code Quality
-
-- Type hints throughout
-- Comprehensive docstrings
-- PEP 8 style compliance
-- Error handling with custom exceptions
-- Structured logging
-
-### Adding New Strategies
-
-1. Extend strategy generation in `MacroAnalysisAgent`
-2. Add customization logic in `StrategyAdaptationAgent`
-3. Update bot code templates in `BotEvolutionAgent`
-4. Test in paper trading mode
-
-### Adding New Exchanges
-
-1. Create new connector implementing `BaseExchange`
-2. Add to `ExchangeFactory`
-3. Update configuration schema
-4. Test thoroughly on testnet
-
----
-
-## Testing
-
-### Run System Test
-
-```bash
-python tests/test_system.py
-```
-
-Tests:
-
-- Configuration loading
-- LLM client initialization
-- Exchange connectivity
-- Agent instantiation
-
-### Unit Tests
-
-```bash
-pytest tests/unit/
-```
-
-### Integration Tests
-
-```bash
-pytest tests/integration/
-```
-
-### Paper Trading Test
-
-Recommended before live trading:
-
-```bash
-# Run for 24-48 hours
-python run_timi.py --mode paper --pairs BTC/USDT ETH/USDT --duration 48
-```
-
-Monitor:
-
-- Win rate > 50%
-- Positive total P&L
-- Drawdown < 10%
-- No emergency stops
-
----
-
-## Performance
-
-### Benchmarks
-
-Tested on 200+ trading pairs across U.S. stock indices and cryptocurrency markets:
-
-**Metrics** (from paper):
-
-- Annual Rate of Return: 6.4% (stocks), 8.0% (mainstream crypto), 13.7% (altcoins)
-- Sharpe Ratio: Competitive across all markets
-- Maximum Drawdown: Well-controlled
-- Action Latency: ~137ms average (180x faster than continuous-inference approaches)
-
-**Efficiency**:
-
-- Decoupled architecture eliminates continuous LLM inference
-- Efficiency ratio: η = cagent/cbot ≈ 180x
-- Minute-level execution frequency
-- CPU-only runtime for deployment stage
-
-### Optimization
-
-- LLM response caching
-- Market data caching (1-minute TTL)
-- Async/await for concurrent operations
-- Connection pooling for exchange API
-- Batch processing where possible
-
----
 
 ## Contributing
 
-We welcome contributions! Here's how to get started:
+Run `python -m pytest` before submitting. Keep claims tied to what has been
+executed: if a change has only been unit tested, say so, and leave the
+validation section above honest.
 
-### Reporting Issues
+## License and citation
 
-- Use GitHub Issues
-- Provide detailed description
-- Include logs and configuration (redact sensitive data)
-- Specify Python version and OS
-
-### Pull Requests
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Ensure all tests pass
-6. Update documentation
-7. Submit pull request
-
-### Code Standards
-
-- Follow PEP 8
-- Add type hints
-- Write docstrings
-- Include unit tests
-- Update relevant documentation
-
-### Areas for Contribution
-
-- Additional exchange connectors
-- More trading strategies
-- Backtesting framework enhancements
-- Web dashboard
-- Performance optimizations
-- Documentation improvements
-
----
-
-## License
-
-MIT License
-
-Copyright (c) 2025 TiMi Development Team
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
----
-
-## Citation
-
-If you use this implementation in your research, please cite the original paper:
+Released under the [MIT License](LICENSE). If this implementation informs
+research, cite the original paper:
 
 ```bibtex
 @article{song2025timi,
@@ -838,74 +241,17 @@ If you use this implementation in your research, please cite the original paper:
 }
 ```
 
-**Paper**: [arXiv:2510.04787](https://arxiv.org/abs/2510.04787)
-
----
+Research conducted at Tongji University, Microsoft Research Asia, the University
+of Bristol and Fudan University.
 
 ## Disclaimer
 
-### IMPORTANT: READ BEFORE USING
+Trading involves substantial risk of loss. This software is for educational and
+research purposes and is not financial advice. The authors are not registered
+investment advisers and make no recommendation regarding any security or
+strategy. You are responsible for compliance with the regulations that apply to
+you.
 
-#### Financial Risk
-
-Trading involves substantial risk of loss. This software is provided for **educational and research purposes only**. It is **NOT** financial advice.
-
-### No Warranties
-
-This software is provided "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, including but not limited to the warranties of MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, and NONINFRINGEMENT.
-
-### Use at Your Own Risk
-
-- Only trade with capital you can afford to lose completely
-- Past performance does not guarantee future results
-- Thoroughly test in paper trading mode before using real money
-- Start with minimal capital if/when transitioning to live trading
-- Monitor your trading continuously
-- Ensure compliance with all applicable financial regulations
-
-### Not Investment Advice
-
-The authors, contributors, and distributors of this software:
-
-- Are not registered investment advisors
-- Do not provide financial advice
-- Make no recommendations regarding any securities or trading strategies
-- Are not responsible for your trading decisions or outcomes
-
-### Regulatory Compliance
-
-You are responsible for:
-
-- Understanding and complying with all applicable laws and regulations
-- Obtaining necessary licenses or registrations
-- Paying applicable taxes on trading profits
-- Following your jurisdiction's financial regulations
-
-### Liability
-
-In no event shall the authors, copyright holders, or contributors be liable for any claim, damages, or other liability arising from the use of this software.
-
----
-
-## Acknowledgments
-
-This implementation is based on research conducted at:
-
-- Tongji University
-- Microsoft Research Asia
-- University of Bristol
-- Fudan University
-
-Special thanks to the original paper authors for their groundbreaking work in rationality-driven agentic trading systems.
-
----
-
-## Support
-
-- **Documentation**: See documentation links above
-- **Issues**: GitHub Issues
-- **Discussions**: GitHub Discussions
-
----
-
-**Built with rationality. Trade with caution.**
+Only trade with capital you can afford to lose completely. Given the open
+defects listed above, the honest recommendation today is not to trade with this
+at all.
