@@ -37,29 +37,30 @@ move without the operator intending it:
 ## What still requires validation
 
 **Nothing in this repository has been run against an exchange, testnet or
-otherwise, since the corrections began.** Verification is a 215 test suite that
+otherwise, since the corrections began.** Verification is a 419 test suite that
 executes the logic with the network blocked, plus reading of the ccxt source. No
 order has been placed, no fill has been observed, and no strategy has been
 evaluated for profitability by anyone working on this code.
 
-The execution engine still carries known defects, and they are the reason live
-trading is gated. As of this commit:
+The execution defects that made earlier versions unsafe have been fixed and
+are covered by tests: the grid is diffed and its resting orders cancelled
+rather than re-placed every cycle, there is a stop loss driven by the
+configured percentage, the risk checks are called before every order, the
+position book is fed from fills and is the source of cost basis, and paper
+mode simulates fills so its statistics are real.
 
-- The grid is re-placed on every cycle and resting orders are never cancelled,
-  so open orders accumulate against a fixed capital allocation.
-- There is no stop loss in the engine. `risk.stop_loss_pct` is configured and
-  nothing reads it.
-- The risk checks exist and are not called. `check_order_risk`,
-  `check_drawdown`, `check_position_risk` and `check_price_deviation` have no
-  call sites, so drawdown protection and position limits cannot fire, and the
-  emergency stop cannot be raised.
-- `PositionManager` and `OrderManager` are never fed, so position and order
-  statistics remain empty and the risk layer sees no state.
-- Paper mode does not simulate fills, so its statistics are structurally zero. A
-  paper run cannot currently demonstrate that a strategy works.
+What has not changed is that none of it is proven against a venue. A test
+shows the code does what its author intended; it cannot show that the
+intention matches how the exchange behaves, how orders queue and fill, what a
+partial fill does, or how the account is configured. The paper-mode
+simulation is optimistic by construction, with no queue position, no fees and
+no slippage, and says so in its own docstring.
 
-Work on these is in progress. Until it lands, treat this repository as something
-to read and test rather than something to run with capital.
+Specific things only a real run can settle: whether the volatility measure
+produces a sensible grid on live prices, whether the turn and rediscover
+timings suit real fill latency, whether the exchange's precision and minimum
+notional rules match what the connector rounds to, and whether the strategy
+makes money, which nothing here has ever tested.
 
 The published performance figures in the paper (annual return, Sharpe ratio,
 action latency) are the paper's own measurements of the authors' system. Nothing
@@ -107,10 +108,19 @@ The paper separates expensive reasoning from time-sensitive execution across
 three stages. Stage I develops strategies offline, stage II refines their
 parameters, and stage III executes them with low latency.
 
-Stages I and III exist here and run. Stage II is implemented but never called:
-`BotEvolutionAgent` and `FeedbackReflectionAgent` are constructed in `main.py`
-and no code path invokes them. The bot code the first of them produces is
-parsed for syntax and stored as a string.
+All three stages run. Stage II executes once before deployment rather than in
+a loop: bot evolution produces its artefact, and feedback reflection refines
+parameters only when there is feedback to reflect on, so a cold start does not
+pay for a call that cannot change anything.
+
+Nothing a model returns is trusted. JSON is extracted by scanning for balanced
+braces, so prose containing a brace cannot swallow the payload and a reply
+truncated at the token limit yields nothing rather than a lucky decode. Every
+numeric is then checked for type, finiteness and range before use, and the risk
+layer independently refuses an allocation outside its configured band, because
+it knows the account size the agents do not.
+
+The bot code stage II produces is parsed for syntax and stored as a string.
 
 **Nothing in this repository executes LLM-generated code**, and there is no path
 by which it could: a search for `exec`, `eval`, `compile` and for any write of a
@@ -135,8 +145,9 @@ python run_timi.py --mode paper --pairs BTC/USDT --duration 1
 python run_timi.py --mode paper --pairs BTC/USDT ETH/USDT --duration 24
 ```
 
-Note that paper mode does not yet simulate fills, so its statistics will be
-zero. See the validation section above.
+Paper mode simulates fills, so its statistics are real. The simulation is
+optimistic: it assumes no queue position, no fees and no slippage, so treat a
+profitable paper run as a floor on how hard live trading is, not a forecast.
 
 ## Technical indicators
 
@@ -157,7 +168,7 @@ than corrected, because the grid geometry is calibrated to it.
 python -m pytest
 ```
 
-215 tests, no network access and no credentials required.
+419 tests, no network access and no credentials required.
 
 The suite cannot reach an exchange account, and that is enforced rather than
 assumed. Two autouse fixtures apply to every test: outbound connections to
@@ -178,9 +189,9 @@ timi/
   data/         market data with caching, technical indicators
   exchange/     ccxt connector, spot, with a testnet assertion
   llm/          provider clients for OpenAI and Anthropic
-  risk/         risk manager and constraints; not yet wired into the order path
+  risk/         risk manager and constraints, checked before every order
   utils/        configuration, mode validation, structured logging
-tests/          215 tests, network blocked by default
+tests/          419 tests, network blocked by default
 config.yaml     system configuration
 .env.example    credentials and safety flags
 ```
