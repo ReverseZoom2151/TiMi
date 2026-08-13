@@ -9,7 +9,7 @@ llm:
   semantic:
     provider: openai  # openai, anthropic
     model: gpt-5-2025-08-07
-    # Alternative: claude-sonnet-4-5-20250514 (anthropic)
+    # Alternative: claude-sonnet-5 (anthropic)
     temperature: 0.7
     max_tokens: 4000
 
@@ -17,7 +17,7 @@ llm:
   code:
     provider: openai
     model: gpt-5-pro-2025-10-06
-    # Alternative: claude-sonnet-4-5-20250514 (anthropic) - best for coding
+    # Alternative: claude-sonnet-5 (anthropic), strong on coding
     temperature: 0.3
     max_tokens: 8000
 
@@ -25,7 +25,7 @@ llm:
   reasoning:
     provider: openai
     model: gpt-5-pro-2025-10-06
-    # Alternative: claude-opus-4-1-20250514 (anthropic) - specialized reasoning
+    # Alternative: claude-opus-5 (anthropic), for the hardest reasoning
     temperature: 0.2
     max_tokens: 4000
 
